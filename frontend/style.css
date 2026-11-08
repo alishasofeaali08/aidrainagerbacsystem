@@ -1,0 +1,141 @@
+/* ── Air-Eyes Design System ── */
+:root{
+  --navy:   #0D2535;
+  --navy2:  #122d40;
+  --teal:   #1B8CA8;
+  --teal2:  #14728b;
+  --amber:  #E8A020;
+  --amber2: #c8881a;
+  --light:  #EBF4F7;
+  --white:  #ffffff;
+  --gray1:  #f0f6f9;
+  --gray2:  #dde8ed;
+  --gray3:  #94a3b8;
+  --text:   #0f2230;
+  --danger: #dc2626;
+  --ok:     #059669;
+  --warn:   #d97706;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--light);color:var(--text);font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;min-height:100vh}
+
+/* ── Buttons ── */
+button{border:0;border-radius:8px;padding:10px 18px;background:var(--teal);color:var(--white);font-weight:600;font-size:14px;cursor:pointer;transition:all .2s}
+button:hover{background:var(--teal2);transform:translateY(-1px);box-shadow:0 4px 12px rgba(27,140,168,.35)}
+button:active{transform:none}
+
+/* ── Inputs ── */
+input,select,textarea{border:1.5px solid var(--gray2);border-radius:8px;padding:10px 14px;min-width:0;font-size:14px;transition:border-color .2s,box-shadow .2s;background:var(--white);color:var(--text);font-family:inherit}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--teal);box-shadow:0 0 0 3px rgba(27,140,168,.15)}
+textarea{min-height:90px;resize:vertical}
+
+/* ── App shell ── */
+.layout{display:grid;grid-template-columns:256px 1fr;min-height:100vh}
+
+/* ── Sidebar ── */
+aside{background:var(--navy);color:var(--white);padding:28px 16px;display:flex;flex-direction:column;gap:4px;position:sticky;top:0;height:100vh;overflow-y:auto}
+.brand{display:flex;align-items:center;gap:10px;margin-bottom:20px;padding:0 4px}
+.brand-icon{width:40px;height:40px}
+.brand-text{display:flex;flex-direction:column;line-height:1.1}
+.brand-text span:first-child{font-size:18px;font-weight:800;color:var(--white);letter-spacing:-.3px}
+.brand-text span:last-child{font-size:11px;color:var(--amber);font-weight:500}
+.user-chip{background:rgba(255,255,255,.07);border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:13px}
+.user-chip strong{display:block;color:var(--white)}
+.user-chip small{color:var(--amber);text-transform:uppercase;font-size:11px;font-weight:600;letter-spacing:.5px}
+aside nav{display:flex;flex-direction:column;gap:2px;flex:1}
+aside nav button{text-align:left;background:transparent;color:rgba(255,255,255,.65);padding:11px 14px;border-radius:8px;font-weight:500;font-size:14px;justify-content:flex-start;box-shadow:none}
+aside nav button:hover{background:rgba(255,255,255,.08);color:var(--white);transform:none}
+aside nav button.active{background:linear-gradient(90deg,var(--teal),var(--teal2));color:var(--white);box-shadow:0 2px 8px rgba(27,140,168,.4)}
+.signout{background:rgba(220,38,38,.15)!important;color:#fca5a5!important;margin-top:8px;font-size:13px}
+.signout:hover{background:rgba(220,38,38,.3)!important;color:#fff!important;transform:none!important}
+
+/* ── Main content ── */
+main{padding:32px;max-width:1300px;width:100%}
+header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:28px;padding-bottom:20px;border-bottom:2px solid var(--gray2)}
+header h1{margin:0;font-size:26px;font-weight:700;color:var(--navy)}
+header small{display:block;color:var(--teal);font-size:11px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;margin-bottom:4px}
+header button{background:var(--navy);padding:9px 16px;font-size:13px;flex-shrink:0}
+
+/* ── Stat cards ── */
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:16px;margin-bottom:24px}
+.stat-card{background:var(--white);border:1px solid var(--gray2);border-radius:14px;padding:20px;box-shadow:0 2px 8px rgba(13,37,53,.06);transition:transform .2s,box-shadow .2s;border-top:3px solid var(--teal)}
+.stat-card:hover{transform:translateY(-3px);box-shadow:0 6px 20px rgba(13,37,53,.1)}
+.stat-card small{display:block;color:var(--gray3);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;margin-bottom:8px}
+.stat-card h2{margin:0;font-size:32px;font-weight:800;color:var(--navy)}
+.stat-card.amber{border-top-color:var(--amber)}
+.stat-card.red{border-top-color:var(--danger)}
+.stat-card.green{border-top-color:var(--ok)}
+.stat-card.purple{border-top-color:#8b5cf6}
+
+/* ── Panels ── */
+.panel{background:var(--white);border:1px solid var(--gray2);border-radius:14px;padding:24px;margin-bottom:20px;box-shadow:0 2px 8px rgba(13,37,53,.05)}
+.panel h2{margin:0 0 16px;font-size:17px;font-weight:700;color:var(--navy);display:flex;align-items:center;gap:8px}
+.panel p{margin:0 0 12px;color:#4a6278;font-size:14px}
+.panel-amber{border-top:3px solid var(--amber)}
+.panel-teal{border-top:3px solid var(--teal)}
+.panel-purple{border-top:3px solid #8b5cf6}
+.panel-green{border-top:3px solid var(--ok)}
+
+/* ── Section tag ── */
+.step-tag{display:inline-block;background:var(--teal);color:white;font-size:10px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;padding:3px 8px;border-radius:4px;margin-right:6px}
+.step-tag.amber{background:var(--amber)}
+.step-tag.purple{background:#8b5cf6}
+.step-tag.green{background:var(--ok)}
+
+/* ── Forms ── */
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.grid h2,.grid textarea{grid-column:1/-1}
+.row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.row>*{flex:1;min-width:120px}
+
+/* ── Tables ── */
+.scroll{overflow:auto;border-radius:10px;border:1px solid var(--gray2)}
+table{border-collapse:collapse;width:100%;font-size:14px}
+td,th{text-align:left;padding:12px 16px;border-bottom:1px solid var(--gray2)}
+th{color:var(--gray3);font-weight:700;text-transform:uppercase;font-size:11px;letter-spacing:.5px;background:var(--gray1)}
+tr:last-child td{border-bottom:0}
+tr:hover td{background:var(--gray1)}
+
+/* ── Badge / pill ── */
+.badge{display:inline-flex;align-items:center;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700;color:white;white-space:nowrap}
+
+/* ── Case cards ── */
+.case-card{border:1px solid var(--gray2);border-radius:12px;padding:16px;margin-bottom:12px;background:var(--white);transition:box-shadow .2s;border-left:4px solid var(--teal)}
+.case-card:hover{box-shadow:0 4px 16px rgba(13,37,53,.08)}
+.case-card-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+.case-card-head strong{font-size:15px;color:var(--navy)}
+
+/* ── Fix submission box ── */
+.fix-box{background:#f0f9ff;border:1px solid #bae6fd;border-radius:10px;padding:14px;margin-top:10px}
+.fix-box strong{font-size:13px;color:#0369a1}
+.approve-box{background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:14px;margin-top:10px}
+.approve-box strong{font-size:13px;color:#15803d}
+.sendback-box{background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:14px;margin-top:10px}
+
+/* ── Login ── */
+.login{min-height:100vh;display:grid;place-items:center;background:linear-gradient(155deg,var(--navy) 0%,var(--navy2) 60%,#1a3a50 100%)}
+.login-card{background:var(--white);border-radius:18px;padding:40px;width:min(420px,92vw);display:grid;gap:14px;box-shadow:0 24px 64px rgba(0,0,0,.4)}
+.login-brand{display:flex;align-items:center;gap:12px;margin-bottom:4px}
+.login-brand-text span:first-child{display:block;font-size:22px;font-weight:800;color:var(--navy)}
+.login-brand-text span:last-child{display:block;font-size:12px;color:var(--teal);font-weight:600}
+.login p{margin:0;color:var(--gray3);font-size:14px}
+.login .link{background:transparent;color:var(--teal);padding:0;text-decoration:none;font-weight:600;font-size:13px;box-shadow:none}
+.login .link:hover{color:var(--teal2);text-decoration:underline;transform:none}
+.login-hint{color:var(--gray3);font-size:12px;text-align:center}
+
+/* ── Alerts ── */
+.error{color:var(--danger);background:#fef2f2;padding:12px 14px;border-radius:8px;border:1px solid #fecaca;font-weight:500;font-size:14px;margin-bottom:12px}
+.success{color:var(--ok);background:#ecfdf5;padding:12px 14px;border-radius:8px;border:1px solid #a7f3d0;font-weight:500;font-size:14px;margin-bottom:12px}
+
+/* ── Responsive ── */
+@media(max-width:820px){
+  .layout{grid-template-columns:1fr}
+  aside{height:auto;position:static;padding:16px}
+  .brand{margin-bottom:12px}
+  aside nav{flex-direction:row;flex-wrap:wrap;gap:6px}
+  aside nav button{flex:0 1 auto;padding:8px 12px;font-size:13px}
+  main{padding:16px}
+  .stats{grid-template-columns:repeat(2,1fr)}
+  .grid{grid-template-columns:1fr}
+}
+@media(max-width:480px){.stats{grid-template-columns:1fr}}
