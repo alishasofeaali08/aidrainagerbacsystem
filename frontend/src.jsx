@@ -667,7 +667,21 @@ function FloodMap({flood,reports,user}){
     setLC(false);
   }
 
-  function selectPin(p){setSel(p);setPE('');NC('');loadComments(p.id);}
+ function selectPin(p){
+   const matched = reports.find(
+     r => String(r.id) === String(p.id)
+   );
+
+   console.log("MAP MARKER:", p);
+   console.log("MATCHED REPORT:", matched);
+   console.log("PHOTO PATH:", matched?.photo_path);
+   console.log("DESCRIPTION:", matched?.description);
+
+   setSel(matched || p);
+   setPE('');
+   NC('');
+   loadComments(p.id);
+ }
 
   async function submitComment(e){
     e.preventDefault();
