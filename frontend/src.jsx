@@ -1,6 +1,13 @@
 import React,{useEffect,useState,useRef} from 'react';
 import{createRoot}from'react-dom/client';
-import{MapContainer,TileLayer,CircleMarker,Popup}from'react-leaflet';
+import {
+  MapContainer,
+  TileLayer,
+  CircleMarker,
+  Popup,
+  Polyline,
+  useMap
+} from 'react-leaflet';
 import'leaflet/dist/leaflet.css';
 import'./style.css';
 
@@ -459,10 +466,193 @@ function ReportForm({user,act}){
     </div>
   </div>
 }
+function MapController({ center, route }) {
+  const map = useMap();
 
+  useEffect(() => {
+    map.invalidateSize();
+
+    if (route && route.length > 1) {
+      map.fitBounds(route, { padding: [40, 40] });
+    } else if (center) {
+      map.setView(center, 13);
+    }
+  }, [map, center, route]);
+
+  return null;
+}
 /* ═══════════════════════════════════════ FLOOD MAP ═══════════════════════════════════════ */
 function FloodMap({flood,reports,user}){
-  let[sel,setSel]=useState(null);
+    const [userLocation, setUserLocation] = useState(null);
+    const [destination, setDestination] = useState(null);
+    const [destinationName, setDestinationName] = useState('');
+    const [route, setRoute] = useState([]);
+    const [gpsStatus, setGpsStatus] = useState('');
+    const [routeStatus, setRouteStatus] = useState('');
+    const [mapError, setMapError] = useState('');
+    const [searching, setSearching] = useState(false);
+
+    const mapCenter = userLocation ||
+      (flood.length > 0 &&
+       Number.isFinite(Number(flood[0].latitude)) &&
+       Number.isFinite(Number(flood[0].longitude))
+         ? [Number(flood[0].latitude), Number(flood[0].longitude)]
+         : [4.2105, 101.9758]);
+
+    function getCurrentLocation() {
+      if (!navigator.geolocation) {
+        setGpsStatus('Your browser does not support GPS.');
+        return;
+      }
+
+      if (!window.isSecureContext) {
+        setGpsStatus('GPS requires a secure HTTPS connection.');
+        return;
+      }
+
+      setGpsStatus('Detecting your location...');
+
+      navigator.geolocation.getCurrentPosition(
+        position => {
+          const coords = [
+            position.coords.latitude,
+            position.coords.longitude
+          ];
+
+          setUserLocation(coords);
+          setGpsStatus('📍 Current location detected!');
+          setRoute([]);
+          setRouteStatus('');
+        },
+        error => {
+          console.error('GPS error:', error.code, error.message);
+
+          const messages = {
+            1: 'Location permission denied. Allow location in browser settings.',
+            2: 'Location unavailable. Check your device location services.',
+            3: 'GPS timed out. Please try again.'
+          };
+
+          setGpsStatus(
+            messages[error.code] || 'Unable to detect your location.'
+          );
+        },
+        {
+          enableHighAccuracy: true,
+          timeout: 20000,
+          maximumAge: 0
+        }
+      );
+    }
+
+    async function searchDestination(e) {
+      e.preventDefault();
+
+      if (!destinationName.trim()) {
+        setRouteStatus('Please enter a destination.');
+        return;
+      }
+
+      setSearching(true);
+      setRouteStatus('');
+      setRoute([]);
+      setMapError('');
+
+      try {
+        const url =
+          'https://nominatim.openstreetmap.org/search?' +
+          new URLSearchParams({
+            format: 'jsonv2',
+            q: destinationName.trim(),
+            limit: '1',
+            countrycodes: 'my'
+          });
+
+        const response = await fetch(url);
+
+        if (!response.ok) {
+          throw new Error('Geocoding service unavailable.');
+        }
+
+        const results = await response.json();
+
+        if (!results.length) {
+          throw new Error('Destination not found. Try another address.');
+        }
+
+        const result = results[0];
+
+        setDestination([
+          Number(result.lat),
+          Number(result.lon)
+        ]);
+
+        setDestinationName(result.display_name);
+        setRouteStatus('Destination found. Get directions to continue.');
+
+      } catch (error) {
+        setRouteStatus(error.message);
+      } finally {
+        setSearching(false);
+      }
+    }
+
+    async function getDirections() {
+      if (!userLocation) {
+        setRouteStatus('Please detect your current location first.');
+        return;
+      }
+
+      if (!destination) {
+        setRouteStatus('Please search for a destination first.');
+        return;
+      }
+
+      setRouteStatus('Calculating route...');
+
+      try {
+        const [startLat, startLng] = userLocation;
+        const [endLat, endLng] = destination;
+
+        const url =
+          `https://router.project-osrm.org/route/v1/driving/` +
+          `${startLng},${startLat};${endLng},${endLat}` +
+          `?overview=full&geometries=geojson`;
+
+        const response = await fetch(url);
+
+        if (!response.ok) {
+          throw new Error('Routing service unavailable.');
+        }
+
+        const data = await response.json();
+
+        if (data.code !== 'Ok' || !data.routes?.length) {
+          throw new Error('No driving route found.');
+        }
+
+        const coordinates = data.routes[0].geometry.coordinates;
+
+        setRoute(
+          coordinates.map(([lng, lat]) => [lat, lng])
+        );
+
+        const distance =
+          (data.routes[0].distance / 1000).toFixed(2);
+
+        const duration =
+          Math.round(data.routes[0].duration / 60);
+
+        setRouteStatus(
+          `Route found: ${distance} km · approximately ${duration} minutes.`
+        );
+
+      } catch (error) {
+        setRoute([]);
+        setRouteStatus(error.message);
+      }
+    }
+   let[sel,setSel]=useState(null);
   let[comments,setComments]=useState([]);
   let[loadingC,setLC]=useState(false);
   let[newComment,NC]=useState('');
@@ -497,28 +687,223 @@ function FloodMap({flood,reports,user}){
   const roleCol=r=>r==='engineer'?'var(--teal)':r==='admin'?'var(--navy)':r==='technician'?'#8b5cf6':'#64748b';
 
   return<div className="panel" style={{padding:0,overflow:'hidden'}}>
-    <div style={{display:'flex',height:600}}>
-      <div style={{flex:sel?'0 0 55%':'1',transition:'flex .3s',minWidth:0}}>
-        <MapContainer center={[3.8077,103.3260]} zoom={7} style={{height:'100%',width:'100%'}}>
-          <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution="© OpenStreetMap"/>
-          {flood.map(p=>{
-            let isSelected=sel?.id===p.id;
-            let col=riskCol(p.risk_score);
-            return<CircleMarker key={p.id} center={[p.latitude,p.longitude]}
-              radius={isSelected?16:p.risk_score>=0.7?13:10}
-              pathOptions={{color:isSelected?'#E8A020':col,fillColor:isSelected?'#E8A020':col,fillOpacity:.75,weight:isSelected?3:2}}
-              eventHandlers={{click:()=>selectPin(p)}}>
-              <Popup>
-                <div style={{minWidth:150}}>
-                  <strong style={{fontSize:13}}>Report #{p.id}</strong>
-                  {p.state&&<div style={{fontSize:11,color:'#64748b'}}>{p.state}</div>}
-                  <div style={{fontSize:12,color:col,fontWeight:700,margin:'4px 0'}}>{Math.round(p.risk_score*100)}% risk</div>
-                  <button onClick={()=>selectPin(p)} style={{fontSize:12,padding:'5px 10px',width:'100%',background:'#1B8CA8'}}>💬 View &amp; Comment</button>
-                </div>
-              </Popup>
-            </CircleMarker>
-          })}
-        </MapContainer>
+    <div style={{display:'flex',height:600,minHeight:450}}>
+
+      <div style={{
+        flex:sel?'0 0 55%':'1',
+        transition:'flex .3s',
+        minWidth:0,
+        minHeight:0,
+        display:'flex',
+        flexDirection:'column'
+      }}>
+
+        {/* GPS AND DESTINATION CONTROLS */}
+        <div style={{
+          padding:12,
+          background:'#f0f6f9',
+          display:'flex',
+          flexDirection:'column',
+          gap:9
+        }}>
+
+          <button
+            type="button"
+            onClick={getCurrentLocation}
+            style={{background:'var(--navy)',width:'100%'}}
+          >
+            📍 Detect My Current Location
+          </button>
+
+          <small style={{color:'var(--teal)'}}>
+            {gpsStatus}
+          </small>
+
+          <form
+            onSubmit={searchDestination}
+            style={{display:'flex',gap:8}}
+          >
+            <input
+              value={destinationName}
+              onChange={e=>setDestinationName(e.target.value)}
+              placeholder="Search destination in Malaysia..."
+              style={{flex:1,minWidth:0}}
+            />
+
+            <button
+              type="submit"
+              disabled={searching}
+              style={{background:'#1B8CA8'}}
+            >
+              {searching?'...':'Search'}
+            </button>
+          </form>
+
+          {destination&&(
+            <button
+              type="button"
+              onClick={getDirections}
+              disabled={!userLocation}
+              style={{background:'#059669'}}
+            >
+              🧭 Get Directions
+            </button>
+          )}
+
+          {routeStatus&&(
+            <small style={{color:'#0D2535',lineHeight:1.5}}>
+              {routeStatus}
+            </small>
+          )}
+
+          {mapError&&(
+            <small style={{color:'#dc2626'}}>
+              {mapError}
+            </small>
+          )}
+
+        </div>
+
+        {/* INTERACTIVE MAP */}
+        <div style={{flex:1,minHeight:0,position:'relative'}}>
+
+          <MapContainer
+            center={mapCenter}
+            zoom={7}
+            style={{height:'100%',width:'100%',minHeight:350}}
+            scrollWheelZoom={true}
+          >
+
+            <MapController center={mapCenter} route={route}/>
+
+            <TileLayer
+              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+              attribution="© OpenStreetMap"
+              eventHandlers={{
+                tileerror:()=>setMapError(
+                  'Map tiles could not load. Check your internet connection.'
+                ),
+                load:()=>setMapError('')
+              }}
+            />
+
+            {/* CURRENT USER LOCATION */}
+            {userLocation&&(
+              <CircleMarker
+                center={userLocation}
+                radius={10}
+                pathOptions={{
+                  color:'#2563eb',
+                  fillColor:'#3b82f6',
+                  fillOpacity:1,
+                  weight:3
+                }}
+              >
+                <Popup>
+                  📍 Your Current Location
+                </Popup>
+              </CircleMarker>
+            )}
+
+            {/* DESTINATION */}
+            {destination&&(
+              <CircleMarker
+                center={destination}
+                radius={11}
+                pathOptions={{
+                  color:'#047857',
+                  fillColor:'#10b981',
+                  fillOpacity:1,
+                  weight:3
+                }}
+              >
+                <Popup>
+                  🎯 Destination
+                  <br/>
+                  {destinationName}
+                </Popup>
+              </CircleMarker>
+            )}
+
+            {/* ROUTE */}
+            {route.length>1&&(
+              <Polyline
+                positions={route}
+                pathOptions={{
+                  color:'#2563eb',
+                  weight:6,
+                  opacity:0.8
+                }}
+              />
+            )}
+
+            {/* EXISTING FLOOD REPORT MARKERS */}
+            {flood.map(p=>{
+              const lat=Number(p.latitude);
+              const lng=Number(p.longitude);
+
+              if(!Number.isFinite(lat)||!Number.isFinite(lng)){
+                return null;
+              }
+
+              let isSelected=sel?.id===p.id;
+              let col=riskCol(p.risk_score);
+
+              return (
+                <CircleMarker
+                  key={p.id}
+                  center={[lat,lng]}
+                  radius={isSelected?16:p.risk_score>=0.7?13:10}
+                  pathOptions={{
+                    color:isSelected?'#E8A020':col,
+                    fillColor:isSelected?'#E8A020':col,
+                    fillOpacity:.75,
+                    weight:isSelected?3:2
+                  }}
+                  eventHandlers={{
+                    click:()=>selectPin(p)
+                  }}
+                >
+                  <Popup>
+                    <div style={{minWidth:150}}>
+                      <strong style={{fontSize:13}}>
+                        Report #{p.id}
+                      </strong>
+
+                      {p.state&&(
+                        <div style={{fontSize:11,color:'#64748b'}}>
+                          {p.state}
+                        </div>
+                      )}
+
+                      <div style={{
+                        fontSize:12,
+                        color:col,
+                        fontWeight:700,
+                        margin:'4px 0'
+                      }}>
+                        {Math.round(p.risk_score*100)}% risk
+                      </div>
+
+                      <button
+                        onClick={()=>selectPin(p)}
+                        style={{
+                          fontSize:12,
+                          padding:'5px 10px',
+                          width:'100%',
+                          background:'#1B8CA8'
+                        }}
+                      >
+                        💬 View &amp; Comment
+                      </button>
+                    </div>
+                  </Popup>
+                </CircleMarker>
+              );
+            })}
+
+          </MapContainer>
+        </div>
       </div>
 
       {sel&&<div style={{flex:'0 0 45%',display:'flex',flexDirection:'column',borderLeft:'1px solid #dde8ed',background:'white',overflow:'hidden'}}>
