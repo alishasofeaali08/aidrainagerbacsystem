@@ -16,6 +16,16 @@ class User(Base):
     state: Mapped[str] = mapped_column(String(80), default="")
     iem_number: Mapped[str] = mapped_column(String(40), default="")
     ic_number: Mapped[str] = mapped_column(String(20), default="")
+    # Location tracking for technicians
+    department_office: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    current_latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    current_longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    last_location_update: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Gamification fields
+    avatar_style: Mapped[str] = mapped_column(String(40), default="default")
+    points: Mapped[int] = mapped_column(Integer, default=0)
+    level: Mapped[int] = mapped_column(Integer, default=1)
+    total_reports_resolved: Mapped[int] = mapped_column(Integer, default=0)
 
 class Report(Base):
     __tablename__ = "reports"
@@ -75,3 +85,13 @@ class Comment(Base):
     user_role: Mapped[str] = mapped_column(String(20), default="citizen")
     text: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+class AICamera(Base):
+    __tablename__ = "ai_cameras"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(120))
+    location: Mapped[str] = mapped_column(String(255), default="")
+    latitude: Mapped[float] = mapped_column(Float)
+    longitude: Mapped[float] = mapped_column(Float)
+    status: Mapped[str] = mapped_column(String(20), default="green") # "red" or "green"
+    last_update: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
