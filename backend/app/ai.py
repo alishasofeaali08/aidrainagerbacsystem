@@ -115,7 +115,6 @@ def state_from_coords(lat: float, lon: float) -> str:
 
 
 # ── Weather-based risk engine ─────────────────────────────────────────────────
-d
 def _fetch_rain_forecast(lat: float, lon: float, provider: str = None) -> dict:
     """
     Fetch a 7-day rainfall forecast directly from Open-Meteo.
