@@ -1122,6 +1122,8 @@ function WeatherRisk({user}){
         headers:{Authorization:'Bearer '+t}
       });
       let d=await r.json();
+      console.log("WEATHER API STATUS:", r.status);
+      console.log("WEATHER API RESPONSE:", d);
      if(!r.ok) {
        console.error("Weather Risk API Error:", r.status, d);
        throw Error(d.detail || `Weather API failed: ${r.status}`);
