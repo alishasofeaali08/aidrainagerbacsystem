@@ -5,7 +5,15 @@ import urllib.request
 import json
 import math
 from typing import Optional
+import time
+import threading
 
+# Weather forecast cache
+_WEATHER_CACHE = {}
+_WEATHER_CACHE_TTL = 3600  # 1 hour
+_WEATHER_STALE_TTL = 86400  # 24 hours
+_WEATHER_CACHE_LOCK = threading.Lock()
+_WEATHER_COOLDOWN_UNTIL = 0
 # ── Drain blockage classifier ─────────────────────────────────────────────────
 def classify_image(description: str, has_photo: bool):
     words = (description or "").lower()
@@ -117,86 +125,168 @@ def state_from_coords(lat: float, lon: float) -> str:
 # ── Weather-based risk engine ─────────────────────────────────────────────────
 def _fetch_rain_forecast(lat: float, lon: float, provider: str = None) -> dict:
     """
-    Fetch a 7-day rainfall forecast directly from Open-Meteo.
-    All rainfall values are daily precipitation sums in mm.
+    Fetch and cache a 7-day Open-Meteo rainfall forecast.
+    Uses cached forecasts to reduce API requests.
+    Preserves the last successful forecast during API outages.
     """
     import json
+    import time
     import urllib.request
     import urllib.parse
+    import urllib.error
 
-    params = {
-        "latitude": lat,
-        "longitude": lon,
-        "daily": "precipitation_sum,precipitation_probability_max",
-        "timezone": "Asia/Kuala_Lumpur",
-        "forecast_days": 7,
-    }
+    cache_key = (round(float(lat), 4), round(float(lon), 4))
+    now = time.time()
 
-    url = (
-        "https://api.open-meteo.com/v1/forecast?"
-        + urllib.parse.urlencode(params)
-    )
+    with _WEATHER_CACHE_LOCK:
 
-    try:
-        request = urllib.request.Request(
-            url,
-            headers={"User-Agent": "DrainWatch/1.0"}
-        )
+        cached = _WEATHER_CACHE.get(cache_key)
 
-        with urllib.request.urlopen(request, timeout=15) as response:
-            data = json.loads(response.read().decode("utf-8"))
+        # Return fresh cached forecast
+        if cached and now - cached["timestamp"] < _WEATHER_CACHE_TTL:
+            result = dict(cached["data"])
+            result["cached"] = True
+            return result
 
-        if data.get("error"):
-            raise ValueError(data.get("reason", "Open-Meteo API error"))
+        # Avoid repeatedly hitting Open-Meteo after rate limiting
+        if now < _WEATHER_COOLDOWN_UNTIL:
+            if cached and now - cached["timestamp"] < _WEATHER_STALE_TTL:
+                result = dict(cached["data"])
+                result["cached"] = True
+                result["stale"] = True
+                return result
 
-        daily = data.get("daily", {})
-        dates = daily.get("time", [])
-        rain = daily.get("precipitation_sum", [])
-        probability = daily.get("precipitation_probability_max", [])
+            return {
+                "dates": [],
+                "rain_mm": [],
+                "prob_pct": [],
+                "total_7d": None,
+                "ok": False,
+                "source": "openmeteo",
+                "error": "Open-Meteo rate limit cooldown active"
+            }
 
-        if not dates or len(dates) != 7:
-            raise ValueError("Incomplete 7-day forecast from Open-Meteo")
-
-        if len(rain) != 7 or len(probability) != 7:
-            raise ValueError("Incomplete rainfall or probability data")
-
-        if any(value is None for value in rain):
-            raise ValueError("Open-Meteo returned missing rainfall values")
-
-        rain_mm = [round(float(value), 1) for value in rain]
-        prob_pct = [
-            round(float(value), 1) if value is not None else None
-            for value in probability
-        ]
-
-        return {
-            "dates": dates,
-            "rain_mm": rain_mm,
-            "prob_pct": prob_pct,
-            "total_7d": round(sum(rain_mm), 1),
-            "ok": True,
-            "source": "openmeteo",
+        params = {
             "latitude": lat,
             "longitude": lon,
+            "daily": "precipitation_sum,precipitation_probability_max",
             "timezone": "Asia/Kuala_Lumpur",
-            "units": {
-                "rainfall": "mm",
-                "probability": "%"
+            "forecast_days": 7,
+        }
+
+        url = (
+            "https://api.open-meteo.com/v1/forecast?"
+            + urllib.parse.urlencode(params)
+        )
+
+        try:
+            request = urllib.request.Request(
+                url,
+                headers={"User-Agent": "DrainWatch/1.0"}
+            )
+
+            with urllib.request.urlopen(request, timeout=15) as response:
+                data = json.loads(response.read().decode("utf-8"))
+
+            if data.get("error"):
+                raise ValueError(data.get("reason", "Open-Meteo API error"))
+
+            daily = data.get("daily", {})
+            dates = daily.get("time", [])
+            rain = daily.get("precipitation_sum", [])
+            probability = daily.get("precipitation_probability_max", [])
+
+            if len(dates) != 7 or len(rain) != 7 or len(probability) != 7:
+                raise ValueError("Incomplete 7-day forecast from Open-Meteo")
+
+            if any(value is None for value in rain):
+                raise ValueError("Missing rainfall values")
+
+            rain_mm = [round(float(value), 1) for value in rain]
+
+            prob_pct = [
+                round(float(value), 1) if value is not None else None
+                for value in probability
+            ]
+
+            result = {
+                "dates": dates,
+                "rain_mm": rain_mm,
+                "prob_pct": prob_pct,
+                "total_7d": round(sum(rain_mm), 1),
+                "ok": True,
+                "source": "openmeteo",
+                "latitude": lat,
+                "longitude": lon,
+                "timezone": "Asia/Kuala_Lumpur",
+                "cached": False,
+                "units": {
+                    "rainfall": "mm",
+                    "probability": "%"
+                }
             }
-        }
 
-    except Exception as e:
-        print(f"Open-Meteo fetch failed for {lat}, {lon}: {e}")
+            # Save successful forecast
+            _WEATHER_CACHE[cache_key] = {
+                "data": result,
+                "timestamp": time.time()
+            }
 
-        return {
-            "dates": [],
-            "rain_mm": [],
-            "prob_pct": [],
-            "total_7d": None,
-            "ok": False,
-            "source": "openmeteo",
-            "error": str(e)
-        }
+            return result
+
+        except urllib.error.HTTPError as e:
+
+            if e.code == 429:
+                retry_after = e.headers.get("Retry-After")
+                try:
+                    cooldown = max(900, int(retry_after))
+                except (TypeError, ValueError):
+                    cooldown = 900
+
+                _WEATHER_COOLDOWN_UNTIL = time.time() + cooldown
+
+                print(
+                    f"Open-Meteo rate limited. "
+                    f"Cooling down for {cooldown} seconds."
+                )
+
+            print(f"Open-Meteo fetch failed for {lat}, {lon}: {e}")
+
+            # Use last successful forecast if available
+            if cached and time.time() - cached["timestamp"] < _WEATHER_STALE_TTL:
+                result = dict(cached["data"])
+                result["cached"] = True
+                result["stale"] = True
+                return result
+
+            return {
+                "dates": [],
+                "rain_mm": [],
+                "prob_pct": [],
+                "total_7d": None,
+                "ok": False,
+                "source": "openmeteo",
+                "error": str(e)
+            }
+
+        except Exception as e:
+            print(f"Open-Meteo fetch failed for {lat}, {lon}: {e}")
+
+            if cached and time.time() - cached["timestamp"] < _WEATHER_STALE_TTL:
+                result = dict(cached["data"])
+                result["cached"] = True
+                result["stale"] = True
+                return result
+
+            return {
+                "dates": [],
+                "rain_mm": [],
+                "prob_pct": [],
+                "total_7d": None,
+                "ok": False,
+                "source": "openmeteo",
+                "error": str(e)
+            }
 
 def _rain_risk(total_7d_mm: float, max_daily_mm: float) -> float:
     """
