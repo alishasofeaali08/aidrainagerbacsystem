@@ -123,20 +123,16 @@ def state_from_coords(lat: float, lon: float) -> str:
 
 
 # ── Weather-based risk engine ─────────────────────────────────────────────────
-def _fetch_rain_forecast(lat: float, lon: float, provider: str = None) -> dict:
-    global _WEATHER_COOLDOWN_UNTIL
 
-    import json
+def _fetch_rain_forecast(lat: float, lon: float, provider: str = None) -> dict:
+    import os
     import time
-    import urllib.request
-    import urllib.parse
-    import urllib.error
+    import requests
 
     cache_key = (round(float(lat), 4), round(float(lon), 4))
     now = time.time()
 
     with _WEATHER_CACHE_LOCK:
-
         cached = _WEATHER_CACHE.get(cache_key)
 
         # Return fresh cached forecast
@@ -145,65 +141,48 @@ def _fetch_rain_forecast(lat: float, lon: float, provider: str = None) -> dict:
             result["cached"] = True
             return result
 
-        # Avoid repeatedly hitting Open-Meteo after rate limiting
-        if now < _WEATHER_COOLDOWN_UNTIL:
-            if cached and now - cached["timestamp"] < _WEATHER_STALE_TTL:
-                result = dict(cached["data"])
-                result["cached"] = True
-                result["stale"] = True
-                return result
+        api_key = os.getenv("WEATHER_API_KEY")
 
+        if not api_key:
             return {
                 "dates": [],
                 "rain_mm": [],
                 "prob_pct": [],
                 "total_7d": None,
                 "ok": False,
-                "source": "openmeteo",
-                "error": "Open-Meteo rate limit cooldown active"
+                "source": "weatherapi",
+                "error": "WEATHER_API_KEY is not configured"
             }
 
-        params = {
-            "latitude": lat,
-            "longitude": lon,
-            "daily": "precipitation_sum,precipitation_probability_max",
-            "timezone": "Asia/Kuala_Lumpur",
-            "forecast_days": 7,
-        }
-
-        url = (
-            "https://api.open-meteo.com/v1/forecast?"
-            + urllib.parse.urlencode(params)
-        )
-
         try:
-            request = urllib.request.Request(
-                url,
-                headers={"User-Agent": "DrainWatch/1.0"}
+            response = requests.get(
+                "https://api.weatherapi.com/v1/forecast.json",
+                params={
+                    "key": api_key,
+                    "q": f"{lat},{lon}",
+                    "days": 3
+                },
+                timeout=15
             )
 
-            with urllib.request.urlopen(request, timeout=15) as response:
-                data = json.loads(response.read().decode("utf-8"))
+            response.raise_for_status()
+            data = response.json()
 
-            if data.get("error"):
-                raise ValueError(data.get("reason", "Open-Meteo API error"))
+            forecast = data["forecast"]["forecastday"]
 
-            daily = data.get("daily", {})
-            dates = daily.get("time", [])
-            rain = daily.get("precipitation_sum", [])
-            probability = daily.get("precipitation_probability_max", [])
+            if len(forecast) != 3:
+                raise ValueError("Incomplete 3-day forecast")
 
-            if len(dates) != 7 or len(rain) != 7 or len(probability) != 7:
-                raise ValueError("Incomplete 7-day forecast from Open-Meteo")
+            dates = [day["date"] for day in forecast]
 
-            if any(value is None for value in rain):
-                raise ValueError("Missing rainfall values")
-
-            rain_mm = [round(float(value), 1) for value in rain]
+            rain_mm = [
+                round(float(day["day"]["totalprecip_mm"]), 1)
+                for day in forecast
+            ]
 
             prob_pct = [
-                round(float(value), 1) if value is not None else None
-                for value in probability
+                round(float(day["day"]["daily_chance_of_rain"]), 1)
+                for day in forecast
             ]
 
             result = {
@@ -212,7 +191,7 @@ def _fetch_rain_forecast(lat: float, lon: float, provider: str = None) -> dict:
                 "prob_pct": prob_pct,
                 "total_7d": round(sum(rain_mm), 1),
                 "ok": True,
-                "source": "openmeteo",
+                "source": "weatherapi",
                 "latitude": lat,
                 "longitude": lon,
                 "timezone": "Asia/Kuala_Lumpur",
@@ -220,55 +199,21 @@ def _fetch_rain_forecast(lat: float, lon: float, provider: str = None) -> dict:
                 "units": {
                     "rainfall": "mm",
                     "probability": "%"
-                }
+                },
+                "forecast_days": 3
             }
 
-            # Save successful forecast
             _WEATHER_CACHE[cache_key] = {
-                "data": result,
-                "timestamp": time.time()
+                "timestamp": time.time(),
+                "data": result
             }
 
             return result
 
-        except urllib.error.HTTPError as e:
-
-            if e.code == 429:
-                retry_after = e.headers.get("Retry-After")
-                try:
-                    cooldown = max(900, int(retry_after))
-                except (TypeError, ValueError):
-                    cooldown = 900
-
-                _WEATHER_COOLDOWN_UNTIL = time.time() + cooldown
-
-                print(
-                    f"Open-Meteo rate limited. "
-                    f"Cooling down for {cooldown} seconds."
-                )
-
-            print(f"Open-Meteo fetch failed for {lat}, {lon}: {e}")
-
-            # Use last successful forecast if available
-            if cached and time.time() - cached["timestamp"] < _WEATHER_STALE_TTL:
-                result = dict(cached["data"])
-                result["cached"] = True
-                result["stale"] = True
-                return result
-
-            return {
-                "dates": [],
-                "rain_mm": [],
-                "prob_pct": [],
-                "total_7d": None,
-                "ok": False,
-                "source": "openmeteo",
-                "error": str(e)
-            }
-
         except Exception as e:
-            print(f"Open-Meteo fetch failed for {lat}, {lon}: {e}")
+            print(f"WeatherAPI fetch failed for {lat}, {lon}: {e}")
 
+            # Use previously cached data if available
             if cached and time.time() - cached["timestamp"] < _WEATHER_STALE_TTL:
                 result = dict(cached["data"])
                 result["cached"] = True
@@ -281,9 +226,10 @@ def _fetch_rain_forecast(lat: float, lon: float, provider: str = None) -> dict:
                 "prob_pct": [],
                 "total_7d": None,
                 "ok": False,
-                "source": "openmeteo",
+                "source": "weatherapi",
                 "error": str(e)
             }
+
 
 def _rain_risk(total_7d_mm: float, max_daily_mm: float) -> float:
     """
