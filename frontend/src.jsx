@@ -1,7 +1,6 @@
 import React,{useEffect,useState,useRef} from 'react';
 import{createRoot}from'react-dom/client';
-import{MapContainer,TileLayer,CircleMarker,Popup,Polyline,Marker,useMap}from'react-leaflet';
-import L from 'leaflet';
+import{MapContainer,TileLayer,CircleMarker,Popup}from'react-leaflet';
 import'leaflet/dist/leaflet.css';
 import'./style.css';
 
@@ -44,31 +43,25 @@ function Badge({label,color}){return <span className="badge" style={{background:
 
 /* ═══════════════════════════════════════ APP ═══════════════════════════════════════ */
 function App(){
-let [user, setUser] = useState(() => {
-  try {
-    const savedUser = localStorage.getItem('user');
-    if (!savedUser || savedUser === 'undefined') return null;
-    return JSON.parse(savedUser);
-  } catch {
-    return null;
-  }
-});
+
+  const [cameras, setCameras] = useState([]);
+  let[user,setUser]=useState(JSON.parse(localStorage.getItem('user')||'null'));
+  let[email,E]=useState('admin@example.com'),[password,P]=useState('Admin123!'),[name,N]=useState(''),[showReg,SR]=useState(false);
+  // Register form state
+  let[rName,RN]=useState(''),[rEmail,RE]=useState(''),[rPw,RP]=useState(''),[rIc,RI]=useState(''),[rPhone,RPH]=useState('');
+  let[tab,T]=useState('📊 Overview'),[reports,R]=useState([]),[flood,F]=useState([]),[users,U]=useState([]);
+  let[error,X]=useState(''),[msg,M]=useState('');
 
   async function refresh(){
     try{
-      let [r, f, c] = await Promise.all([
-        req('/reports'),
-        req('/map/flood'),
-        req('/ai-cameras')
-      ]);
-      R(r);
-      F(f);
-      setCameras(c);
+      R(await req('/reports'));
+      F(await req('/map/flood'));
+      setCameras(await req('/ai-cameras'));
       if(user.role==='admin')U(await req('/admin/users'));
       X('');
     }catch(e){X(e.message)}
   }
-  useEffect(()=>{if(user)refresh(); let itv=setInterval(()=>user&&refresh(), 10000); return ()=>clearInterval(itv);},[user?.id]);
+  useEffect(()=>{if(user)refresh()},[user?.id]);
   async function act(fn,ok='Updated'){try{await fn();M(ok);await refresh()}catch(e){X(e.message)}}
 
   /* ── Login / Register ── */
@@ -84,16 +77,8 @@ let [user, setUser] = useState(() => {
         </div>
         {showReg
           ?<>
-            <p style={{fontWeight:600,color:'var(--navy)',fontSize:15,margin:0}}>Create Account</p>
-            <p style={{fontSize:13,color:'var(--gray3)',margin:0}}>Fill in your details to register.</p>
-            {/* Role Selection */}
-            <div style={{display:'flex',flexDirection:'column',gap:4}}>
-              <label style={{fontSize:12,fontWeight:700,color:'var(--navy)',textTransform:'uppercase',letterSpacing:.5}}>Account Type</label>
-              <select value={rRole} onChange={e=>RR(e.target.value)} style={{padding:'8px',borderRadius:6,border:'1px solid #dde8ed'}}>
-                <option value="citizen">Citizen</option>
-                <option value="technician">Technician</option>
-              </select>
-            </div>
+            <p style={{fontWeight:600,color:'var(--navy)',fontSize:15,margin:0}}>Create Citizen Account</p>
+            <p style={{fontSize:13,color:'var(--gray3)',margin:0}}>Fill in your details to register. All fields are required.</p>
             {/* Full name */}
             <div style={{display:'flex',flexDirection:'column',gap:4}}>
               <label style={{fontSize:12,fontWeight:700,color:'var(--navy)',textTransform:'uppercase',letterSpacing:.5}}>Full Name (as per IC)</label>
@@ -105,11 +90,6 @@ let [user, setUser] = useState(() => {
               <input value={rIc} onChange={e=>{let v=e.target.value.replace(/\D/g,'').slice(0,12);RI(v)}} placeholder="12 digits e.g. 990101011234" maxLength={12} inputMode="numeric"/>
               <small style={{color:'var(--gray3)',fontSize:11}}>{rIc.length}/12 digits{rIc.length===12&&<span style={{color:'var(--ok)',fontWeight:700}}> ✓</span>}</small>
             </div>
-            {/* Department Office for Technician */}
-            {rRole==='technician'&&<div style={{display:'flex',flexDirection:'column',gap:4}}>
-              <label style={{fontSize:12,fontWeight:700,color:'var(--navy)',textTransform:'uppercase',letterSpacing:.5}}>Department Office</label>
-              <input value={rDept} onChange={e=>RDPT(e.target.value)} placeholder="e.g. JPS Kuala Lumpur"/>
-            </div>}
             {/* Email */}
             <div style={{display:'flex',flexDirection:'column',gap:4}}>
               <label style={{fontSize:12,fontWeight:700,color:'var(--navy)',textTransform:'uppercase',letterSpacing:.5}}>Email Address</label>
@@ -129,14 +109,12 @@ let [user, setUser] = useState(() => {
                   let f=new FormData();
                   f.append('name',rName);f.append('email',rEmail);
                   f.append('password',rPw);f.append('ic_number',rIc);
-                  f.append('department_office',rDept);
-                  f.append('role',rRole);
                   await req('/auth/register',{method:'POST',body:f});
                   M('Registration successful! Please sign in.');
-                  SR(false);RN('');RE('');RP('');RI('');RDPT('');RR('citizen');
+                  SR(false);RN('');RE('');RP('');RI('');
                 }catch(e){X(e.message)}
               }}>
-              Register as {rRole.charAt(0).toUpperCase() + rRole.slice(1)}
+              Register as Citizen
             </button>
             {error&&<p className="error">{error}</p>}
             {msg&&<p className="success">{msg}</p>}
@@ -158,10 +136,9 @@ let [user, setUser] = useState(() => {
   );
 
   /* ── Nav tabs by role ── */
-  let nav=['📊 Overview','📋 Reports','🗺️ Flood Map'];
+  let nav=['📊 Overview','📋 Reports','🗺️ Flood Map','🌊 AI Detection'];
   if(['engineer','admin'].includes(user.role))nav.push('🔍 My State Cases');
   if(user.role==='technician')nav.push('🛠️ My Cases');
-  nav.push('🌊 AI Detection');
   nav.push('🌦️ Weather Risk');
   if(user.role==='admin')nav.push('👥 Users');
 
@@ -193,8 +170,8 @@ let [user, setUser] = useState(() => {
         {msg&&<p className="success">{msg}</p>}
         {tab==='📊 Overview'&&<Overview reports={reports} flood={flood} user={user}/>}
         {tab==='📋 Reports'&&<ReportsTab user={user} reports={reports} act={act}/>}
-        {tab==='🌊 AI Detection'&&<AICameraSystem cameras={cameras} user={user} act={act}/>}
-        {tab==='🗺️ Flood Map'&&<FloodMap flood={flood} reports={reports} user={user} cameras={cameras}/>}
+        {tab==='🗺️ Flood Map'&&<FloodMap flood={flood} reports={reports} user={user}/>}
+        {tab === '🌊 AI Detection' && <AICameraSystem cameras={cameras} user={user} act={act}/>}
         {tab==='🔍 My State Cases'&&<EngineerCases reports={reports} user={user} act={act}/>}
         {tab==='🛠️ My Cases'&&<TechnicianCases reports={reports} act={act}/>}
         {tab==='🌦️ Weather Risk'&&<WeatherRisk user={user}/>}
@@ -484,51 +461,13 @@ function ReportForm({user,act}){
 }
 
 /* ═══════════════════════════════════════ FLOOD MAP ═══════════════════════════════════════ */
-function FloodMap({flood,reports,user,cameras}){
+function FloodMap({flood,reports,user}){
   let[sel,setSel]=useState(null);
   let[comments,setComments]=useState([]);
   let[loadingC,setLC]=useState(false);
   let[newComment,NC]=useState('');
   let[posting,setPosting]=useState(false);
   let[postErr,setPE]=useState('');
-  
-  // Technician Sharing state
-  let[sharingLocation,setSharing]=useState(false);
-  let[shareTimer,setTimer]=useState(null);
-  
-  // Route planning state
-  let[showRoute,SR]=useState(false);
-  let[originName,ON]=useState('');
-  let[destName,DN]=useState('');
-  let[originLat,setOriginLat]=useState('');
-  let[originLon,setOriginLon]=useState('');
-  let[destLat,setDestLat]=useState('');
-  let[destLon,setDestLon]=useState('');
-  let[routeData,RD]=useState(null);
-  let[loadingRoute,LR]=useState(false);
-  let[routeError,RE]=useState('');
-  let[currentLoc,CL]=useState(null);
-  
-  // Navigation mode state
-  let[navigationMode,NM]=useState(false);
-  let[turnByTurn,TBT]=useState(null);
-  let[loadingNav,LN]=useState(false);
-  let[currentStep,CS]=useState(0);
-  
-  function MapFocus(){
-    const map=useMap();
-    useEffect(()=>{
-      if(navigationMode && currentLoc){
-        map.setView([currentLoc.lat, currentLoc.lon], 16);
-      }
-    },[navigationMode, currentLoc, map]);
-    return null;
-  }
-  
-  // Technician locator state
-  let[showTechs,ST]=useState(false);
-  let[nearbyTechs,NT]=useState([]);
-  let[loadingTechs,LT]=useState(false);
 
   let selReport=sel?reports.find(r=>r.id===sel.id)||sel:null;
 
@@ -552,301 +491,16 @@ function FloodMap({flood,reports,user,cameras}){
     setPosting(false);
   }
 
-  async function getCurrentLocation(){
-    if(!navigator.geolocation){alert('Geolocation not supported');return;}
-    LR(true);
-    navigator.geolocation.getCurrentPosition(
-      async p=>{
-        setOriginLat(p.coords.latitude);
-        setOriginLon(p.coords.longitude);
-        CL({lat:p.coords.latitude,lon:p.coords.longitude});
-        // Reverse geocode to get location name
-        try{
-          let d=await req(`/geocode?location=${p.coords.latitude},${p.coords.longitude}`);
-          ON(d.display_name.split(',')[0]);
-        }catch(e){
-          ON('Current Location');
-        }
-        LR(false);
-      },
-      ()=>{
-        alert('Could not get location');
-        LR(false);
-      }
-    );
-  }
-
-  async function geocodeLocation(location){
-    if(!location||location.length<2){return null;}
-    try{
-      let d=await req(`/geocode?location=${encodeURIComponent(location)}`);
-      return d;
-    }catch(e){
-      return null;
-    }
-  }
-
-  async function calculateRoute(){
-    if(!originName){alert('Please enter origin location');return;}
-    if(!destName){alert('Please enter destination location');return;}
-    LR(true);RE('');
-    
-    try{
-      // Geocode origin
-      let originCoords = await geocodeLocation(originName);
-      if(!originCoords){
-        RE(`Could not find location: ${originName}`);
-        LR(false);
-        return;
-      }
-      setOriginLat(originCoords.latitude);
-      setOriginLon(originCoords.longitude);
-      
-      // Geocode destination
-      let destCoords = await geocodeLocation(destName);
-      if(!destCoords){
-        RE(`Could not find location: ${destName}`);
-        LR(false);
-        return;
-      }
-      setDestLat(destCoords.latitude);
-      setDestLon(destCoords.longitude);
-      
-      // Calculate route
-      let d=await req(`/route/flood-safe?origin_lat=${originCoords.latitude}&origin_lon=${originCoords.longitude}&dest_lat=${destCoords.latitude}&dest_lon=${destCoords.longitude}`);
-      // Ensure coordinates are [lat, lon] for Leaflet
-      if(d.route && d.route.coordinates && d.route.coordinates.length > 0){
-        // Check if they need flipping (OSRM usually gives [lon, lat])
-        // If the first coord's absolute value of the first element is > 90, it's definitely longitude first
-        if(Math.abs(d.route.coordinates[0][0]) > 90){
-          d.route.coordinates = d.route.coordinates.map(c => [c[1], c[0]]);
-        }
-      }
-      RD(d);
-    }catch(e){RE(e.message);}
-    LR(false);
-  }
-
-  async function startNavigation(){
-    if(!routeData){alert('Please calculate a route first');return;}
-    LN(true);CS(0);
-    try{
-      let d=await req(`/route/turn-by-turn?origin_lat=${originLat}&origin_lon=${originLon}&dest_lat=${destLat}&dest_lon=${destLon}`);
-      TBT(d);
-      NM(true);
-      // Close route planner to focus on navigation
-      SR(false);
-    }catch(e){alert(e.message);}
-    LN(false);
-  }
-
-  async function findAllTechnicians(){
-    LT(true);
-    try{
-      let d=await req(`/technicians/nearest?latitude=4.2105&longitude=101.9758&radius_km=3000`);
-      NT(d.technicians);
-    }catch(e){alert(e.message);}
-    LT(false);
-  }
-
-  async function toggleLocationSharing(){
-    if(sharingLocation){
-      if(shareTimer)clearInterval(shareTimer);
-      setTimer(null);
-      setSharing(false);
-    }else{
-      setSharing(true);
-      const update=()=>{
-        navigator.geolocation.getCurrentPosition(async(p)=>{
-          CL({lat:p.coords.latitude,lon:p.coords.longitude});
-          try{
-            await req(`/technicians/update-location?latitude=${p.coords.latitude}&longitude=${p.coords.longitude}`,{method:'POST'});
-          }catch(e){console.error('Location update failed',e);}
-        },null,{enableHighAccuracy:true});
-      };
-      update();
-      setTimer(setInterval(update, 30000)); // Every 30 seconds
-    }
-  }
-
-  function getAvatarStyle(style){
-    const colors={
-      'default':'#1B8CA8',
-      'hero':'#E8A020',
-      'expert':'#059669',
-      'legend':'#8b5cf6'
-    };
-    return colors[style]||colors['default'];
-  }
-
   const riskCol=v=>v>=0.7?'#dc2626':v>=0.5?'#d97706':'#059669';
   const statusCol=s=>({resolved:'#059669',pending_closure:'#8b5cf6',engineer_approved:'#1B8CA8',in_progress:'#d97706',reviewed:'#0891b2',rejected:'#dc2626'}[s]||'#64748b');
   const statusLabel=s=>({submitted:'Submitted',reviewed:'Reviewed',engineer_approved:'Engineer Approved',in_progress:'In Progress',pending_closure:'Pending Closure',resolved:'Resolved',rejected:'Rejected'}[s]||s);
   const roleCol=r=>r==='engineer'?'var(--teal)':r==='admin'?'var(--navy)':r==='technician'?'#8b5cf6':'#64748b';
 
-  // Custom icons
-  const originIcon = L.divIcon({
-    className: 'custom-marker',
-    html: '<div style="background:#1B8CA8;width:16px;height:16px;border-radius:50%;border:3px solid white;box-shadow:0 2px 4px rgba(0,0,0,0.3);"></div>',
-    iconSize: [16, 16],
-    iconAnchor: [8, 8]
-  });
-
-  const destIcon = L.divIcon({
-    className: 'custom-marker',
-    html: '<div style="background:#dc2626;width:16px;height:16px;border-radius:50%;border:3px solid white;box-shadow:0 2px 4px rgba(0,0,0,0.3);"></div>',
-    iconSize: [16, 16],
-    iconAnchor: [8, 8]
-  });
-
-  const turnByTurnIcon = L.divIcon({
-    className: 'custom-marker',
-    html: '<div style="background:#E8A020;width:16px;height:16px;border-radius:50%;border:3px solid white;box-shadow:0 2px 4px rgba(0,0,0,0.3);"></div>',
-    iconSize: [16, 16],
-    iconAnchor: [8, 8]
-  });
-
-  const techIcon = (style) => L.divIcon({
-    className: 'custom-marker',
-    html: `<div style="background:${getAvatarStyle(style)};width:20px;height:20px;border-radius:50%;border:3px solid white;box-shadow:0 2px 4px rgba(0,0,0,0.3);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:bold;color:white;">🔧</div>`,
-    iconSize: [20, 20],
-    iconAnchor: [10, 10]
-  });
-
   return<div className="panel" style={{padding:0,overflow:'hidden'}}>
-    {/* Route planning toggle */}
-    <div style={{padding:'10px 16px',borderBottom:'1px solid #dde8ed',background:'#f0f6f9',display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
-      <button onClick={()=>SR(!showRoute)} style={{background:showRoute?'var(--teal)':'var(--navy)',fontSize:13}}>
-        {showRoute?'🗺️ Hide Route Planner':'🗺️ Plan Flood-Safe Route'}
-      </button>
-      {showRoute&&<button onClick={startNavigation} disabled={loadingNav} style={{background:loadingNav?'var(--gray3)':'#E8A020',fontSize:13,opacity:loadingNav?0.6:1}}>
-          {loadingNav?'Loading…':'🧭 Start Navigation'}
-        </button>}
-      <button onClick={()=>{if(!showTechs)findAllTechnicians();ST(!showTechs)}} style={{background:showTechs?'#8b5cf6':'var(--navy)',fontSize:13}}>
-        {showTechs?'🔧 Hide Technicians':'🔧 Show All Technicians'}
-      </button>
-      {showRoute&&<span style={{fontSize:12,color:'var(--gray3)',marginLeft:'auto'}}>Enter location names in Malaysia</span>}
-      {user.role==='technician'&&<button onClick={toggleLocationSharing} style={{background:sharingLocation?'#059669':'var(--navy)',fontSize:13,marginLeft:showRoute?'0':'auto'}}>
-        {sharingLocation?'📡 Sharing Location...':'📡 Share My Location'}
-      </button>}
-    </div>
-
-    {/* Route planning panel */}
-    {showRoute&&<div style={{padding:'12px 16px',borderBottom:'1px solid #dde8ed',background:'white',display:'flex',gap:10,flexWrap:'wrap',alignItems:'flex-end'}}>
-      <div style={{display:'flex',flexDirection:'column',gap:4,flex:1,minWidth:200}}>
-        <label style={{fontSize:11,fontWeight:700,color:'var(--navy)',textTransform:'uppercase'}}>Origin Location</label>
-        <input type="text" value={originName} onChange={e=>ON(e.target.value)} placeholder="e.g. Kuala Lumpur, Petaling Jaya" style={{padding:'6px 8px',fontSize:12}}/>
-      </div>
-      <button onClick={getCurrentLocation} disabled={loadingRoute} style={{background:'var(--amber)',fontSize:12,padding:'6px 12px',height:32,opacity:loadingRoute?0.6:1}}>📍 Use Current</button>
-      {currentLoc&&<span style={{fontSize:11,color:'var(--ok)',fontWeight:600}}>✓ Location active</span>}
-      <div style={{display:'flex',flexDirection:'column',gap:4,flex:1,minWidth:200}}>
-        <label style={{fontSize:11,fontWeight:700,color:'var(--navy)',textTransform:'uppercase'}}>Destination</label>
-        <input type="text" value={destName} onChange={e=>DN(e.target.value)} placeholder="e.g. Shah Alam, Subang Jaya" style={{padding:'6px 8px',fontSize:12}}/>
-      </div>
-      <button onClick={calculateRoute} disabled={loadingRoute} style={{background:'var(--teal)',fontSize:12,padding:'6px 12px',height:32,opacity:loadingRoute?0.6:1}}>
-        {loadingRoute?'Calculating…':'🚀 Calculate Route'}
-      </button>
-      {routeError&&<span style={{fontSize:12,color:'#dc2626',flex:'1 1 100%',marginTop:4}}>{routeError}</span>}
-    </div>}
-
-    {/* Route analysis result */}
-    {routeData&&<div style={{padding:'10px 16px',borderBottom:'1px solid #dde8ed',background:routeData.flood_risk_analysis.overall_risk>=0.6?'#fef2f2':routeData.flood_risk_analysis.overall_risk>=0.35?'#fff7ed':'#f0fdf4',display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'}}>
-      <div style={{display:'flex',alignItems:'center',gap:8}}>
-        <span style={{fontSize:12,fontWeight:700,color:'var(--navy)'}}>Route Risk:</span>
-        <span style={{fontSize:14,fontWeight:700,color:riskCol(routeData.flood_risk_analysis.overall_risk)}}>{Math.round(routeData.flood_risk_analysis.overall_risk*100)}%</span>
-        <Badge label={routeData.flood_risk_analysis.risk_level} color={routeData.flood_risk_analysis.risk_level==='high'?'#dc2626':routeData.flood_risk_analysis.risk_level==='moderate'?'#d97706':'#059669'}/>
-      </div>
-      <span style={{fontSize:12,color:'#64748b'}}>📏 {(routeData.route.distance/1000).toFixed(1)} km · ⏱ {Math.round(routeData.route.duration/60)} min</span>
-      <span style={{fontSize:12,color:'#64748b',flex:1}}>{routeData.flood_risk_analysis.recommendation}</span>
-      <button onClick={()=>RD(null)} style={{fontSize:11,padding:'4px 8px',background:'var(--gray3)'}}>Clear</button>
-    </div>}
-
-    <div style={{display:'flex',height:showRoute||navigationMode?500:600}}>
-      <div style={{flex:sel||navigationMode?'0 0 55%':'1',transition:'flex .3s',minWidth:0}}>
-        <MapContainer center={[4.2105,101.9758]} zoom={6} style={{height:'100%',width:'100%'}}>
+    <div style={{display:'flex',height:600}}>
+      <div style={{flex:sel?'0 0 55%':'1',transition:'flex .3s',minWidth:0}}>
+        <MapContainer center={[3.8077,103.3260]} zoom={7} style={{height:'100%',width:'100%'}}>
           <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution="© OpenStreetMap"/>
-          <MapFocus/>
-          
-          {/* Route polyline with risk coloring */}
-          {routeData&&routeData.route.coordinates&&<Polyline 
-            positions={routeData.route.coordinates}
-            color={riskCol(routeData.flood_risk_analysis.overall_risk)}
-            weight={5}
-            opacity={0.8}
-          />}
-          
-          {/* Origin and destination markers */}
-          {routeData&&originLat&&originLon&&<Marker position={[parseFloat(originLat),parseFloat(originLon)]} icon={originIcon}>
-            <Popup>📍 Origin</Popup>
-          </Marker>}
-          {routeData&&destLat&&destLon&&<Marker position={[parseFloat(destLat),parseFloat(destLon)]} icon={destIcon}>
-            <Popup>🎯 Destination</Popup>
-          </Marker>}
-
-          {/* Nearby Technicians */}
-          {showTechs&&nearbyTechs.map(t=><Marker key={t.id} position={[t.latitude,t.longitude]} icon={techIcon(t.avatar_style)}>
-            <Popup>
-              <div style={{minWidth:140}}>
-                <strong>{t.name}</strong><br/>
-                <Badge label="Technician" color="#8b5cf6"/><br/>
-                {t.department_office && <div style={{fontSize:11,color:'var(--teal)',fontWeight:600,margin:'4px 0'}}>🏢 {t.department_office}</div>}
-                <small>{t.name.includes('Admin')?'Central Office':(t.distance_km < 1000 ? `${t.distance_km} km away` : 'Active in Malaysia')}</small>
-              </div>
-            </Popup>
-          </Marker>)}
-
-          {/* User Location Marker */}
-          {currentLoc&&<Marker position={[currentLoc.lat,currentLoc.lon]} icon={L.divIcon({
-            className:'user-loc',
-            html:'<div style="background:#3b82f6;width:14px;height:14px;border-radius:50%;border:2px solid white;box-shadow:0 0 10px rgba(59,130,246,0.5);"></div>',
-            iconSize:[14,14],iconAnchor:[7,7]
-          })}>
-            <Popup>You are here</Popup>
-          </Marker>}
-
-          {/* Turn by turn step markers */}
-          {navigationMode&&turnByTurn&&turnByTurn.steps.map((s,i)=>(
-            <Marker key={`step-${i}`} position={s.location} icon={turnByTurnIcon}>
-              <Popup>
-                <div style={{fontSize:12}}>
-                  <strong>Step {i+1}</strong><br/>
-                  {s.instruction}
-                </div>
-              </Popup>
-            </Marker>
-          ))}
-          
-          {/* AI Smart Cameras - Red/Green Areas */}
-          {cameras && cameras.map(c => (
-            <CircleMarker 
-              key={`camera-${c.id}`} 
-              center={[c.latitude, c.longitude]}
-              radius={40}
-              pathOptions={{
-                color: c.status === 'red' ? '#dc2626' : '#059669',
-                fillColor: c.status === 'red' ? '#dc2626' : '#059669',
-                fillOpacity: 0.2,
-                weight: 2,
-                dashArray: '5, 10'
-              }}
-            >
-              <Popup>
-                <div style={{minWidth:160}}>
-                  <div style={{fontSize:10,fontWeight:700,color:'var(--teal)',textTransform:'uppercase',marginBottom:4}}>🤖 AI Monitoring Station</div>
-                  <strong style={{fontSize:14}}>{c.name}</strong>
-                  {c.location && <div style={{fontSize:11,color:'var(--gray3)',margin:'2px 0'}}>{c.location}</div>}
-                  <div style={{margin:'8px 0',padding:'5px',background:c.status==='red'?'#fef2f2':'#f0fdf4',borderRadius:4,border:`1px solid ${c.status==='red'?'#fee2e2':'#dcfce7'}`}}>
-                    <div style={{fontSize:11,fontWeight:700,color:c.status==='red'?'#dc2626':'#059669',display:'flex',alignItems:'center',gap:4}}>
-                      <span style={{width:8,height:8,borderRadius:'50%',background:c.status==='red'?'#dc2626':'#059669',display:'inline-block'}}></span>
-                      {c.status==='red' ? 'FLOOD DETECTED' : 'FLOW NORMAL'}
-                    </div>
-                  </div>
-                  <div style={{fontSize:10,color:'var(--gray3)'}}>Last processed: {new Date(c.last_update).toLocaleTimeString()}</div>
-                </div>
-              </Popup>
-            </CircleMarker>
-          ))}
-
           {flood.map(p=>{
             let isSelected=sel?.id===p.id;
             let col=riskCol(p.risk_score);
@@ -916,34 +570,6 @@ function FloodMap({flood,reports,user,cameras}){
           </form>
         </div>
       </div>}
-
-      {navigationMode&&turnByTurn&&<div style={{flex:'0 0 45%',display:'flex',flexDirection:'column',borderLeft:'1px solid #dde8ed',background:'white',overflow:'hidden'}}>
-        <div style={{padding:'12px 16px',borderBottom:'1px solid #dde8ed',background:'var(--navy)',color:'white',display:'flex',alignItems:'center',gap:8}}>
-          <strong style={{fontSize:15,flex:1}}>🧭 Navigation</strong>
-          <button onClick={()=>{NM(false);TBT(null);}} style={{background:'var(--danger)',fontSize:12,padding:'4px 10px'}}>Stop</button>
-        </div>
-        <div style={{flex:1,overflowY:'auto',padding:'14px 16px'}}>
-          {turnByTurn.steps.map((s,i)=>(
-            <div key={i} onClick={()=>CS(i)} style={{
-              padding:'12px',
-              borderRadius:8,
-              background:currentStep===i?'#f0f6f9':'white',
-              border:'1px solid '+ (currentStep===i?'var(--teal)':'#dde8ed'),
-              marginBottom:8,
-              cursor:'pointer',
-              display:'flex',
-              gap:12,
-              alignItems:'center'
-            }}>
-              <div style={{fontSize:24}}>{s.maneuver.type.includes('turn')?(s.maneuver.modifier.includes('left')?'⬅️':'➡️'):'⬆️'}</div>
-              <div style={{flex:1}}>
-                <div style={{fontSize:14,fontWeight:600,color:'var(--navy)'}}>{s.instruction}</div>
-                <div style={{fontSize:12,color:'#64748b'}}>{Math.round(s.distance)}m · {s.name||'Unnamed Road'}</div>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>}
     </div>
     <div style={{padding:'10px 16px',borderTop:'1px solid #dde8ed',display:'flex',gap:16,flexWrap:'wrap',background:'#f0f6f9'}}>
       <span style={{fontSize:12,color:'#94a3b8'}}>🔴 High risk ≥70%</span>
@@ -958,7 +584,7 @@ function FloodMap({flood,reports,user,cameras}){
 
 /* ═══════════════════════════════════════ USERS ═══════════════════════════════════════ */
 function Users({users,act,user,reports}){
-  let[name,N]=useState(''),[email,E]=useState(''),[password,P]=useState('TempPass123!'),[role,R]=useState('engineer'),[state,ST]=useState(''),[iem,IM]=useState(''),[ic,IC]=useState(''),[dept,DEPT]=useState('');
+  let[name,N]=useState(''),[email,E]=useState(''),[password,P]=useState('TempPass123!'),[role,R]=useState('engineer'),[state,ST]=useState(''),[iem,IM]=useState(''),[ic,IC]=useState('');
 
   return<>
     <div className="panel panel-teal">
@@ -979,10 +605,6 @@ function Users({users,act,user,reports}){
           <input value={ic} onChange={e=>{let v=e.target.value.replace(/\D/g,'').slice(0,12);IC(v)}} placeholder="12 digits e.g. 990101011234" maxLength={12} inputMode="numeric"/>
           <small style={{fontSize:11,color:ic.length===12?'var(--ok)':'var(--gray3)'}}>{ic.length}/12 digits{ic.length===12&&' ✓'}</small>
         </div>}
-        {role==='technician'&&<div style={{gridColumn:'1/-1',display:'flex',flexDirection:'column',gap:4}}>
-          <label style={{fontSize:12,fontWeight:700,color:'var(--navy)',textTransform:'uppercase',letterSpacing:.5}}>Department Office</label>
-          <input value={dept} onChange={e=>DEPT(e.target.value)} placeholder="e.g. JPS Kuala Lumpur, DBKL Engineering"/>
-        </div>}
         {role==='engineer'&&<>
           <input placeholder="IEM Membership No. (e.g. M/12345)" value={iem} onChange={e=>IM(e.target.value)} style={{gridColumn:'1/-1'}}/>
           <label style={{fontSize:13,color:'var(--navy)',fontWeight:600,display:'flex',flexDirection:'column',gap:4,gridColumn:'1/-1'}}>
@@ -994,15 +616,15 @@ function Users({users,act,user,reports}){
           </label>
         </>}
         <button style={{gridColumn:'1/-1'}} onClick={()=>{
-          act(()=>req(`/admin/users?name=${encodeURIComponent(name)}&email=${encodeURIComponent(email)}&password=${encodeURIComponent(password)}&role=${role}&state=${encodeURIComponent(state)}&iem_number=${encodeURIComponent(iem)}&ic_number=${encodeURIComponent(ic)}&department_office=${encodeURIComponent(dept)}`,{method:'POST'}),'User created');
-          N('');E('');P('TempPass123!');R('engineer');ST('');IM('');IC('');DEPT('');
+          act(()=>req(`/admin/users?name=${encodeURIComponent(name)}&email=${encodeURIComponent(email)}&password=${encodeURIComponent(password)}&role=${role}&state=${encodeURIComponent(state)}&iem_number=${encodeURIComponent(iem)}&ic_number=${encodeURIComponent(ic)}`,{method:'POST'}),'User created');
+          N('');E('');P('TempPass123!');R('engineer');ST('');IM('');IC('');
         }}>Create User</button>
       </div>
     </div>
 
     <div className="panel">
       <h2>👥 All Users</h2>
-      <div className="scroll"><table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>IC / IEM / Dept</th><th>State</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+      <div className="scroll"><table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>IC / IEM</th><th>State</th><th>Status</th><th>Actions</th></tr></thead><tbody>
         {users.map(u=><UserRow key={u.id} u={u} me={user} act={act}/>)}
       </tbody></table></div>
     </div>
@@ -1026,10 +648,9 @@ function UserRow({u,me,act}){
     <td style={{fontSize:13,color:'var(--gray3)'}}>{u.email}</td>
     <td><Badge label={u.role} color={u.role==='engineer'?'var(--teal)':u.role==='admin'?'var(--navy)':u.role==='technician'?'#8b5cf6':'#64748b'}/></td>
     <td style={{fontSize:12}}>
-      {u.ic_number?<span style={{color:'var(--navy)',fontFamily:'monospace',display:'block'}}>{u.ic_number.replace(/(\d{6})(\d{2})(\d{4})/,'$1-$2-$3')}</span>:null}
+      {u.ic_number?<span style={{color:'var(--navy)',fontFamily:'monospace'}}>{u.ic_number.replace(/(\d{6})(\d{2})(\d{4})/,'$1-$2-$3')}</span>:null}
       {u.iem_number?<span style={{color:'var(--amber)',fontWeight:600,fontSize:11,display:'block'}}>IEM {u.iem_number}</span>:null}
-      {u.department_office?<span style={{color:'var(--teal)',fontWeight:600,fontSize:11,display:'block'}}>🏢 {u.department_office}</span>:null}
-      {!u.ic_number&&!u.iem_number&&!u.department_office&&<span style={{color:'var(--gray3)'}}>—</span>}
+      {!u.ic_number&&!u.iem_number&&<span style={{color:'var(--gray3)'}}>—</span>}
     </td>
     <td>
       {u.role==='engineer'?
@@ -1074,7 +695,10 @@ function WeatherRisk({user}){
   async function load(){
     setLoading(true);setError('');
     try{
-      let d=await req('/weather-risk');
+      let t=localStorage.getItem('token');
+      let r=await fetch('/api/weather-risk',{headers:{Authorization:'Bearer '+t}});
+      let d=await r.json();
+      if(!r.ok)throw Error(d.detail||'Failed');
       setData(d);
       // auto-select engineer's own state
       if(user.state){let own=d.find(x=>x.state===user.state);if(own)setSel(own);}
@@ -1177,16 +801,16 @@ function WeatherRisk({user}){
 /* ═══════════════════════════════════════ AI CAMERA SYSTEM ═══════════════════════════════════════ */
 function AICameraSystem({cameras,user,act}){
   let[name,N]=useState(''),[loc,L]=useState('');
-  
+
   const isAdmin = user.role === 'admin';
 
   return <div className="panel panel-teal">
     <h2>🌊 AI Smart Water Level Monitoring</h2>
     <p style={{fontSize:14,color:'var(--gray3)',marginBottom:20}}>
-      This system simulates a network of IoT-connected cameras across the drainage network. 
+      This system simulates a network of IoT-connected cameras across the drainage network.
       AI models process live video feeds to detect water levels and potential overflow in real-time.
     </p>
-    
+
     {isAdmin && <div className="stat-card" style={{marginBottom:20,background:'#f0f6f9',border:'1px dashed var(--teal)'}}>
       <strong style={{fontSize:13,display:'block',marginBottom:10}}>➕ Register New Monitoring Camera (Admin Only)</strong>
       <div className="grid" style={{gap:10}}>
@@ -1203,7 +827,7 @@ function AICameraSystem({cameras,user,act}){
     <div className="grid" style={{gridTemplateColumns:'repeat(auto-fill, minmax(300px, 1fr))',gap:20}}>
       {cameras.map(c => <CameraCard key={c.id} camera={c} isAdmin={isAdmin} act={act} />)}
     </div>
-    
+
     {!cameras.length && <p style={{textAlign:'center',padding:40,color:'var(--gray3)'}}>No smart monitoring cameras registered.</p>}
   </div>
 }
@@ -1260,7 +884,10 @@ function CameraCard({camera, isAdmin, act}) {
             const f = new FormData();
             f.append('image', blob, 'frame.jpg');
             try {
-              const res = await req(`/ai-cameras/${camera.id}/analyze-sam2`, {method:'POST', body:f});
+              const res = await req(`/ai-cameras/${camera.id}/analyze-sam2`, {
+                method: 'POST',
+                body: f
+              });
               if (res && res.sam2_analysis) {
                 setSam2Result(res.sam2_analysis);
                 const sam2Level = Math.round(res.sam2_analysis.water_area_ratio * 100);
@@ -1273,11 +900,11 @@ function CameraCard({camera, isAdmin, act}) {
         } else {
           // Basic AI: Local Vertical Height Detection
           const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
-          
+
           let detectedHeight = 0;
           const rows = canvas.height;
           const cols = canvas.width;
-          
+
           for (let x = 0; x < cols; x += 5) {
             let columnWaterHeight = 0;
             for (let y = rows - 1; y >= rows / 2; y--) {
@@ -1286,24 +913,27 @@ function CameraCard({camera, isAdmin, act}) {
               const isBlueish = b > r * 1.1 && b > g * 0.9;
               const isDark = r < 60 && g < 60 && b < 60;
               const isTurbid = g > r * 0.9 && b > r * 0.9 && (g+b) > (r*1.8);
-              
+
               if (isBlueish || isDark || isTurbid) {
                 columnWaterHeight++;
               } else break;
             }
             detectedHeight = Math.max(detectedHeight, columnWaterHeight);
           }
-          
+
           const newLevel = Math.min(100, Math.round((detectedHeight / (rows / 2)) * 100));
           setAiLevel(prev => Math.round(prev * 0.8 + newLevel * 0.2));
-          
+
           // Basic AI auto-update status
           const currentLevel = Math.round(aiLevel * 0.8 + newLevel * 0.2);
           const newStatus = currentLevel > 70 ? 'red' : 'green';
           if (newStatus !== camera.status && isAdmin) {
             let f = new FormData();
             f.append('status', newStatus);
-            req(`/ai-cameras/${camera.id}`, {method:'PATCH', body:f}).catch(console.error);
+           req(`/ai-cameras/${camera.id}`, {
+             method: 'PATCH',
+             body: f
+           }).catch(console.error);
           }
         }
       }, 2000); // Increased interval to 2s to accommodate SAM 2 inference
@@ -1317,18 +947,20 @@ function CameraCard({camera, isAdmin, act}) {
   const c = camera;
   const isFlood = aiLevel > 70;
   const waterLevelRecognition = aiLevel > 70 ? 'HIGH' : (aiLevel > 30 ? 'MEDIUM' : 'LOW');
-  
+
   // Simulation: Drain max height is 100cm
-  const maxDrainHeight = 100; 
+  const maxDrainHeight = 100;
   const currentWaterHeight = Math.round((aiLevel / 100) * maxDrainHeight);
-  
+
   return (
     <div className="stat-card" style={{position:'relative',borderTopColor:isFlood?'#dc2626':'#059669'}}>
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
         <div>
           <strong style={{fontSize:16}}>{c.name}</strong>
           <div style={{fontSize:12,color:'var(--gray3)',marginTop:4}}>
-            {c.location || `${c.latitude.toFixed(4)}, ${c.longitude.toFixed(4)}`}
+             {c.location || (c.latitude != null && c.longitude != null
+              ? `${Number(c.latitude).toFixed(4)}, ${Number(c.longitude).toFixed(4)}`
+             : 'Location unavailable')}
           </div>
         </div>
         <Badge label={isFlood?'FLOOD DETECTED':'NO FLOOD'} color={isFlood?'#dc2626':'#059669'}/>
@@ -1338,20 +970,20 @@ function CameraCard({camera, isAdmin, act}) {
         <canvas ref={canvasRef} width="80" height="60" style={{display:'none'}} />
         {stream ? (
           <>
-            <video 
-              ref={videoRef} 
-              autoPlay 
-              playsInline 
-              muted 
+            <video
+              ref={videoRef}
+              autoPlay
+              playsInline
+              muted
               style={{width:'100%', height:'100%', objectFit:'cover', position:'absolute', top:0, left:0}}
             />
             {/* AI Scan Overlay */}
             <div style={{
-              position:'absolute', 
-              top: '50%', 
-              left: 0, 
-              right: 0, 
-              bottom: 0, 
+              position:'absolute',
+              top: '50%',
+              left: 0,
+              right: 0,
+              bottom: 0,
               borderTop: '2px solid rgba(255,255,255,0.3)',
               background: isFlood ? 'rgba(220,38,38,0.1)' : 'rgba(5,150,105,0.05)',
               pointerEvents: 'none',
@@ -1386,9 +1018,13 @@ function CameraCard({camera, isAdmin, act}) {
             )}
           </>
         )}
-        
+
         <div style={{position:'absolute',top:10,left:10,background:isFlood?'rgba(220,38,38,0.8)':'rgba(5,150,105,0.8)',padding:'2px 6px',borderRadius:4,fontSize:10,fontWeight:700,zIndex:2}}>
-          {stream ? (useSam2 ? `SAM 2 ENHANCED: ${waterLevelRecognition} LEVEL` : `AI RECOGNIZING: ${waterLevelRecognition} LEVEL`) : 'CAMERA OFFLINE'}
+         {stream
+           ? (useSam2
+               ? `SAM 2 ENHANCED: ${waterLevelRecognition} LEVEL`
+               : `AI RECOGNIZING: ${waterLevelRecognition} LEVEL`)
+           : 'CAMERA OFFLINE'}
         </div>
 
         {useSam2 && sam2Result && (
@@ -1397,7 +1033,7 @@ function CameraCard({camera, isAdmin, act}) {
             <div>Inference: {sam2Result.inference_time_ms}ms</div>
           </div>
         )}
-        
+
         {stream && <div style={{position:'absolute', bottom:0, left:0, right:0, background:'rgba(0,0,0,0.7)', padding:8, zIndex:2}}>
            <div style={{display:'flex', justifyContent:'space-between', alignItems:'center'}}>
              <div style={{fontSize:10,fontWeight:600,color:isFlood?'#ff8a8a':'#a7f3d0'}}>
@@ -1406,7 +1042,7 @@ function CameraCard({camera, isAdmin, act}) {
              <div style={{fontSize:9, color:'#fff', opacity:0.8}}>{isFlood?'FLOOD RISK':'NORMAL FLOW'}</div>
            </div>
            <div style={{width:'100%',height:6,background:'#333',borderRadius:3,marginTop:4,overflow:'hidden'}}>
-              <div style={{width:`${aiLevel}%`,height:'100%',background:isFlood?'#dc2626':'#059669',transition:'width 0.5s'}}/>
+             <div style={{width:`${aiLevel}%`,height:'100%',background:isFlood?'#dc2626':'#059669',transition:'width 0.5s'}}/>
            </div>
            <div style={{fontSize:8, color:'rgba(255,255,255,0.5)', marginTop:2, fontStyle:'italic'}}>
              Calculated: ({currentWaterHeight}cm / {maxDrainHeight}cm) × 100 = {aiLevel}%
@@ -1416,9 +1052,9 @@ function CameraCard({camera, isAdmin, act}) {
       </div>
 
       {isAdmin && <div style={{marginTop:15,display:'flex',gap:8,alignItems:'center'}}>
-        <button 
-          onClick={() => setUseSam2(!useSam2)} 
-          className="btn-small" 
+        <button
+          onClick={() => setUseSam2(!useSam2)}
+          className="btn-small"
           style={{
             background: useSam2 ? 'var(--navy)' : '#e2e8f0',
             color: useSam2 ? '#fff' : '#475569',
@@ -1434,7 +1070,7 @@ function CameraCard({camera, isAdmin, act}) {
         <div style={{flex:1, fontSize:10, color:'var(--gray3)', fontStyle:'italic'}}>
           {useSam2 ? 'High-precision SAM 2 segmenting...' : 'Standard AI detection active.'}
         </div>
-        <button 
+        <button
           onClick={()=>act(()=>req(`/ai-cameras/${c.id}`,{method:'DELETE'}),'Camera deleted')}
           style={{background:'transparent',color:'var(--danger)',fontSize:10,boxShadow:'none',padding:0}}
         >
@@ -1446,5 +1082,5 @@ function CameraCard({camera, isAdmin, act}) {
     </div>
   );
 }
-      
+
 createRoot(document.getElementById('root')).render(<App/>);

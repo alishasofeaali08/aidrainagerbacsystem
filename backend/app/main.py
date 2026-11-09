@@ -21,8 +21,26 @@ from .weatherapi import get_weatherapi_client
 Base.metadata.create_all(bind=engine)
 Path(settings.upload_dir).mkdir(parents=True, exist_ok=True)
 app=FastAPI(title="Air-Eyes API", version="1.0")
-app.add_middleware(CORSMiddleware, allow_origins=[x.strip() for x in settings.cors_origins.split(",")], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
-app.mount("/uploads",StaticFiles(directory=settings.upload_dir),name="uploads")
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:5174",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.mount(
+    "/uploads",
+    StaticFiles(directory=settings.upload_dir),
+    name="uploads"
+)
 VALID_ROLES={"citizen","technician","engineer","admin"}
 IC_ROLES={"citizen","technician"}  # roles that require IC number
 
