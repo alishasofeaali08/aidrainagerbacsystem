@@ -290,7 +290,10 @@ def weather_risk(provider: str = None, db:Session=Depends(get_db), u:User=Depend
             .where(Report.status.not_in(["resolved","rejected"]))
         ) or 0
         results.append(weather_risk_for_state(state, active, provider=provider))
-    results.sort(key=lambda x: x.get("combined_risk",0), reverse=True)
+        results.sort(
+         key=lambda x: x.get("combined_risk") or 0,
+         reverse=True
+          )
     return results
 
 @app.delete("/api/admin/users/{uid}")

@@ -115,105 +115,89 @@ def state_from_coords(lat: float, lon: float) -> str:
 
 
 # ── Weather-based risk engine ─────────────────────────────────────────────────
+d
 def _fetch_rain_forecast(lat: float, lon: float, provider: str = None) -> dict:
     """
-    Fetch 7-day daily precipitation sum from weather provider.
-    Provider priority: metmalaysia > accuweather > weatherapi > openmeteo
-    Returns {"dates": [...], "rain_mm": [...], "total_7d": float}
+    Fetch a 7-day rainfall forecast directly from Open-Meteo.
+    All rainfall values are daily precipitation sums in mm.
     """
-    from .config import settings
-    import asyncio
-    
-    # Determine provider to use
-    if provider is None:
-        provider = settings.preferred_weather_provider or "openmeteo"
-    
-    # Try MET Malaysia first (best for Malaysia)
-    if provider == "metmalaysia" and settings.metmalaysia_api_token:
-        try:
-            from .metmalaysia import get_metmalaysia_client
-            client = asyncio.run(get_metmalaysia_client())
-            # Use Open Data API (no auth required for basic forecast)
-            forecast_data = asyncio.run(client.get_open_data_forecast(limit=7))
-            parsed = client.parse_forecast_for_risk(forecast_data)
-            if parsed.get("ok"):
-                return parsed
-        except Exception as e:
-            print(f"MET Malaysia fetch failed: {e}")
-    
-    # Try AccuWeather
-    if provider in ["accuweather", "metmalaysia"] and settings.accuweather_api_key:
-        try:
-            from .accuweather import get_accuweather_client
-            client = asyncio.run(get_accuweather_client())
-            location_key = asyncio.run(client.get_location_key(lat, lon))
-            
-            if location_key:
-                forecast = asyncio.run(client.get_forecast(location_key, days=7))
-                if forecast and "DailyForecasts" in forecast:
-                    daily_forecasts = forecast["DailyForecasts"]
-                    dates = []
-                    rain_mm = []
-                    prob_pct = []
-                    
-                    for day in daily_forecasts:
-                        dates.append(day.get("Date", ""))
-                        day_rain = day.get("Day", {}).get("Precipitation", {}).get("Value", 0) or 0
-                        night_rain = day.get("Night", {}).get("Precipitation", {}).get("Value", 0) or 0
-                        rain_mm.append(round(day_rain + night_rain, 1))
-                        prob = day.get("Day", {}).get("PrecipitationProbability", 0) or 0
-                        prob_pct.append(prob)
-                    
-                    return {
-                        "dates": dates,
-                        "rain_mm": rain_mm,
-                        "prob_pct": prob_pct,
-                        "total_7d": round(sum(rain_mm), 1),
-                        "ok": True,
-                        "source": "accuweather"
-                    }
-        except Exception as e:
-            print(f"AccuWeather fetch failed: {e}")
-    
-    # Try WeatherAPI.com
-    if provider in ["weatherapi", "accuweather", "metmalaysia"] and settings.weatherapi_key:
-        try:
-            from .weatherapi import get_weatherapi_client
-            client = asyncio.run(get_weatherapi_client())
-            location_query = f"{lat},{lon}"
-            forecast_data = asyncio.run(client.get_forecast(location_query, days=7))
-            parsed = client.parse_forecast_for_risk(forecast_data)
-            if parsed.get("ok"):
-                return parsed
-        except Exception as e:
-            print(f"WeatherAPI.com fetch failed: {e}")
-    
-    # Fallback to Open-Meteo (free, no API key)
-    url = (
-        f"https://api.open-meteo.com/v1/forecast"
-        f"?latitude={lat}&longitude={lon}"
-        f"&daily=precipitation_sum,precipitation_probability_max"
-        f"&timezone=Asia%2FKuala_Lumpur"
-        f"&forecast_days=7"
-    )
-    try:
-        with urllib.request.urlopen(url, timeout=8) as resp:
-            data = json.loads(resp.read())
-        daily = data.get("daily", {})
-        rain  = daily.get("precipitation_sum", [0]*7)
-        prob  = daily.get("precipitation_probability_max", [0]*7)
-        dates = daily.get("time", [])
-        return {
-            "dates":    dates,
-            "rain_mm":  [r or 0 for r in rain],
-            "prob_pct": [p or 0 for p in prob],
-            "total_7d": round(sum(r or 0 for r in rain), 1),
-            "ok": True,
-            "source": "openmeteo"
-        }
-    except Exception as e:
-        return {"dates": [], "rain_mm": [], "prob_pct": [], "total_7d": 0, "ok": False, "error": str(e)}
+    import json
+    import urllib.request
+    import urllib.parse
 
+    params = {
+        "latitude": lat,
+        "longitude": lon,
+        "daily": "precipitation_sum,precipitation_probability_max",
+        "timezone": "Asia/Kuala_Lumpur",
+        "forecast_days": 7,
+    }
+
+    url = (
+        "https://api.open-meteo.com/v1/forecast?"
+        + urllib.parse.urlencode(params)
+    )
+
+    try:
+        request = urllib.request.Request(
+            url,
+            headers={"User-Agent": "DrainWatch/1.0"}
+        )
+
+        with urllib.request.urlopen(request, timeout=15) as response:
+            data = json.loads(response.read().decode("utf-8"))
+
+        if data.get("error"):
+            raise ValueError(data.get("reason", "Open-Meteo API error"))
+
+        daily = data.get("daily", {})
+        dates = daily.get("time", [])
+        rain = daily.get("precipitation_sum", [])
+        probability = daily.get("precipitation_probability_max", [])
+
+        if not dates or len(dates) != 7:
+            raise ValueError("Incomplete 7-day forecast from Open-Meteo")
+
+        if len(rain) != 7 or len(probability) != 7:
+            raise ValueError("Incomplete rainfall or probability data")
+
+        if any(value is None for value in rain):
+            raise ValueError("Open-Meteo returned missing rainfall values")
+
+        rain_mm = [round(float(value), 1) for value in rain]
+        prob_pct = [
+            round(float(value), 1) if value is not None else None
+            for value in probability
+        ]
+
+        return {
+            "dates": dates,
+            "rain_mm": rain_mm,
+            "prob_pct": prob_pct,
+            "total_7d": round(sum(rain_mm), 1),
+            "ok": True,
+            "source": "openmeteo",
+            "latitude": lat,
+            "longitude": lon,
+            "timezone": "Asia/Kuala_Lumpur",
+            "units": {
+                "rainfall": "mm",
+                "probability": "%"
+            }
+        }
+
+    except Exception as e:
+        print(f"Open-Meteo fetch failed for {lat}, {lon}: {e}")
+
+        return {
+            "dates": [],
+            "rain_mm": [],
+            "prob_pct": [],
+            "total_7d": None,
+            "ok": False,
+            "source": "openmeteo",
+            "error": str(e)
+        }
 
 def _rain_risk(total_7d_mm: float, max_daily_mm: float) -> float:
     """
@@ -229,54 +213,88 @@ def _rain_risk(total_7d_mm: float, max_daily_mm: float) -> float:
     return round(min(base + peak, 1.0), 3)
 
 
+
 def weather_risk_for_state(state: str, active_reports: int, provider: str = None) -> dict:
     """
-    Compute combined weather + drainage load risk for one state.
-    active_reports = count of non-resolved reports in that state.
-    provider = weather provider to use (metmalaysia, accuweather, weatherapi, openmeteo)
+    Calculate combined weather and drainage risk for a Malaysian state.
+    Open-Meteo is the exclusive weather source.
     """
     coords = STATE_CAPITALS.get(state)
+
     if not coords:
         return {"state": state, "error": "unknown state"}
 
-    forecast = _fetch_rain_forecast(*coords, provider=provider)
+    forecast = _fetch_rain_forecast(*coords)
 
-    rain_mm   = forecast["rain_mm"]
-    max_daily = max(rain_mm) if rain_mm else 0
-    total_7d  = forecast["total_7d"]
+    if not forecast.get("ok"):
+        return {
+            "state": state,
+            "weather_score": None,
+            "load_factor": None,
+            "combined_risk": None,
+            "risk_level": "Unavailable",
+            "total_rain_7d": None,
+            "max_daily_rain": None,
+            "active_reports": active_reports,
+            "forecast": forecast,
+            "narrative": (
+                f"Weather data for {state} is currently unavailable. "
+                "Flood risk cannot be reliably calculated."
+            ),
+            "coords": coords,
+            "data_source": "openmeteo",
+            "error": forecast.get("error", "Weather data unavailable")
+        }
+
+    rain_mm = forecast["rain_mm"]
+    max_daily = max(rain_mm)
+    total_7d = forecast["total_7d"]
 
     weather_score = _rain_risk(total_7d, max_daily)
 
-    # Drainage load factor: each 5 active reports adds 0.05, capped at 0.30
     load_factor = min(active_reports / 5 * 0.05, 0.30)
 
-    combined = round(min(weather_score * 0.70 + load_factor * 0.30 + weather_score * load_factor * 0.20, 1.0), 3)
+    combined = round(
+        min(
+            weather_score * 0.70
+            + load_factor * 0.30
+            + weather_score * load_factor * 0.20,
+            1.0
+        ),
+        3
+    )
 
     level = (
-        "🔴 Extreme"  if combined >= 0.80 else
-        "🟠 High"     if combined >= 0.60 else
+        "🔴 Extreme" if combined >= 0.80 else
+        "🟠 High" if combined >= 0.60 else
         "🟡 Moderate" if combined >= 0.35 else
         "🟢 Low"
     )
 
-    # AI narrative
-    narrative = _generate_narrative(state, total_7d, max_daily, active_reports, combined, level, forecast)
+    narrative = _generate_narrative(
+        state,
+        total_7d,
+        max_daily,
+        active_reports,
+        combined,
+        level,
+        forecast
+    )
 
     return {
-        "state":          state,
-        "weather_score":  weather_score,
-        "load_factor":    round(load_factor, 3),
-        "combined_risk":  combined,
-        "risk_level":     level,
-        "total_rain_7d":  total_7d,
+        "state": state,
+        "weather_score": weather_score,
+        "load_factor": round(load_factor, 3),
+        "combined_risk": combined,
+        "risk_level": level,
+        "total_rain_7d": total_7d,
         "max_daily_rain": round(max_daily, 1),
         "active_reports": active_reports,
-        "forecast":       forecast,
-        "narrative":      narrative,
-        "coords":         coords,
-        "data_source":    forecast.get("source", "openmeteo"),
+        "forecast": forecast,
+        "narrative": narrative,
+        "coords": coords,
+        "data_source": "openmeteo"
     }
-
 
 def _generate_narrative(state, total_7d, max_daily, reports, combined, level, forecast):
     """Rule-based AI narrative — no external LLM required."""
