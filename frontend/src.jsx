@@ -12,6 +12,13 @@ import'leaflet/dist/leaflet.css';
 import'./style.css';
 
 const API=import.meta.env.VITE_API_URL||'/api';
+const BACKEND_URL = 'https://air-eyes-ctrl-system.onrender.com';
+
+const getPhotoUrl = (path) => {
+  if (!path) return '';
+  if (path.startsWith('http://') || path.startsWith('https://')) return path;
+  return `${BACKEND_URL}${path.startsWith('/') ? path : `/${path}`}`;
+};
 const MY_STATES=["Johor","Kedah","Kelantan","Melaka","Negeri Sembilan","Pahang","Perak","Perlis","Pulau Pinang","Sabah","Sarawak","Selangor","Terengganu","Kuala Lumpur","Putrajaya","Labuan"];
 
 async function req(path,opts={}){
@@ -929,7 +936,23 @@ function FloodMap({flood,reports,user}){
         </div>
 
         <div style={{flex:1,overflowY:'auto',padding:'14px 16px',display:'flex',flexDirection:'column',gap:12}}>
-          {selReport?.photo_path&&<img src={selReport.photo_path} alt="report" style={{width:'100%',maxHeight:180,objectFit:'cover',borderRadius:8,border:'1px solid #dde8ed'}}/>}
+          {selReport?.photo_path && (
+            <img
+              src={getPhotoUrl(selReport.photo_path)}
+              alt="report"
+              style={{
+                width:'100%',
+                maxHeight:180,
+                objectFit:'cover',
+                borderRadius:8,
+                border:'1px solid #dde8ed'
+              }}
+              onError={(e) => {
+                console.error("Photo failed to load:", e.currentTarget.src);
+                e.currentTarget.style.display = 'none';
+              }}
+            />
+          )}
 
           <div style={{display:'flex',alignItems:'center',gap:8}}>
             <span style={{fontSize:12,color:'#94a3b8',fontWeight:600,minWidth:64}}>Flood Risk</span>
