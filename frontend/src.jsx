@@ -1122,7 +1122,10 @@ function WeatherRisk({user}){
         headers:{Authorization:'Bearer '+t}
       });
       let d=await r.json();
-      if(!r.ok)throw Error(d.detail||'Failed');
+     if(!r.ok) {
+       console.error("Weather Risk API Error:", r.status, d);
+       throw Error(d.detail || `Weather API failed: ${r.status}`);
+     }
       setData(d);
       // auto-select engineer's own state
       if(user.state){let own=d.find(x=>x.state===user.state);if(own)setSel(own);}
