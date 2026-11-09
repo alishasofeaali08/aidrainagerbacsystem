@@ -44,12 +44,15 @@ function Badge({label,color}){return <span className="badge" style={{background:
 
 /* ═══════════════════════════════════════ APP ═══════════════════════════════════════ */
 function App(){
-  let[user,setUser]=useState(JSON.parse(localStorage.getItem('user')||'null'));
-  let[email,E]=useState('admin@example.com'),[password,P]=useState('Admin123!'),[name,N]=useState(''),[showReg,SR]=useState(false);
-  // Register form state
-  let[rName,RN]=useState(''),[rEmail,RE]=useState(''),[rPw,RP]=useState(''),[rIc,RI]=useState(''),[rPhone,RPH]=useState(''),[rDept,RDPT]=useState(''),[rRole,RR]=useState('citizen');
-  let[tab,T]=useState('📊 Overview'),[reports,R]=useState([]),[flood,F]=useState([]),[users,U]=useState([]),[cameras,setCameras]=useState([]);
-  let[error,X]=useState(''),[msg,M]=useState('');
+let [user, setUser] = useState(() => {
+  try {
+    const savedUser = localStorage.getItem('user');
+    if (!savedUser || savedUser === 'undefined') return null;
+    return JSON.parse(savedUser);
+  } catch {
+    return null;
+  }
+});
 
   async function refresh(){
     try{
