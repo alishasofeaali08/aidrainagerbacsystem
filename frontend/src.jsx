@@ -696,7 +696,9 @@ function WeatherRisk({user}){
     setLoading(true);setError('');
     try{
       let t=localStorage.getItem('token');
-      let r=await fetch('/api/weather-risk',{headers:{Authorization:'Bearer '+t}});
+      let r=await fetch(`${import.meta.env.VITE_API_BASE_URL}/api/weather-risk`,{
+        headers:{Authorization:'Bearer '+t}
+      });
       let d=await r.json();
       if(!r.ok)throw Error(d.detail||'Failed');
       setData(d);
