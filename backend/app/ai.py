@@ -124,11 +124,8 @@ def state_from_coords(lat: float, lon: float) -> str:
 
 # ── Weather-based risk engine ─────────────────────────────────────────────────
 def _fetch_rain_forecast(lat: float, lon: float, provider: str = None) -> dict:
-    """
-    Fetch and cache a 7-day Open-Meteo rainfall forecast.
-    Uses cached forecasts to reduce API requests.
-    Preserves the last successful forecast during API outages.
-    """
+    global _WEATHER_COOLDOWN_UNTIL
+
     import json
     import time
     import urllib.request
