@@ -17,10 +17,12 @@ from .ai import classify_image, flood_score, priority, state_from_coords, weathe
 from .accuweather import get_accuweather_client
 from .metmalaysia import get_metmalaysia_client
 from .weatherapi import get_weatherapi_client
+from .scan_ic import router as scan_ic_router
 
 Base.metadata.create_all(bind=engine)
 Path(settings.upload_dir).mkdir(parents=True, exist_ok=True)
 app=FastAPI(title="Air-Eyes API", version="1.0")
+app.include_router(scan_ic_router, prefix="/api")
 from fastapi.middleware.cors import CORSMiddleware
 
 app.add_middleware(

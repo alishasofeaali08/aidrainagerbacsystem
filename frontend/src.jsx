@@ -10,9 +10,10 @@ import {
 } from 'react-leaflet';
 import'leaflet/dist/leaflet.css';
 import'./style.css';
+import Peer from 'peerjs';
 
 const API=import.meta.env.VITE_API_URL||'/api';
-const BACKEND_URL = 'https://air-eyes-ctrl-system.onrender.com';
+const BACKEND_URL = 'https://air-eyes-ctrl-system.onrender.com/api';
 
 const getPhotoUrl = (path) => {
   if (!path) return '';
@@ -93,6 +94,7 @@ function App(){
           ?<>
             <p style={{fontWeight:600,color:'var(--navy)',fontSize:15,margin:0}}>Create Citizen Account</p>
             <p style={{fontSize:13,color:'var(--gray3)',margin:0}}>Fill in your details to register. All fields are required.</p>
+            <IcScanner onResult={({name,ic})=>{ if(name)RN(name); if(ic)RI(ic); }}/>
             {/* Full name */}
             <div style={{display:'flex',flexDirection:'column',gap:4}}>
               <label style={{fontSize:12,fontWeight:700,color:'var(--navy)',textTransform:'uppercase',letterSpacing:.5}}>Full Name (as per IC)</label>
@@ -151,6 +153,8 @@ function App(){
 
   /* ── Nav tabs by role ── */
   let nav=['📊 Overview','📋 Reports','🗺️ Flood Map','🌊 AI Detection'];
+  if(['admin','engineer'].includes(user.role))nav.push('📈 Analysis');
+  if(['admin','engineer','technician'].includes(user.role))nav.push('📡 Camera Node');
   if(['engineer','admin'].includes(user.role))nav.push('🔍 My State Cases');
   if(user.role==='technician')nav.push('🛠️ My Cases');
   nav.push('🌦️ Weather Risk');
@@ -186,6 +190,8 @@ function App(){
         {tab==='📋 Reports'&&<ReportsTab user={user} reports={reports} act={act}/>}
         {tab==='🗺️ Flood Map'&&<FloodMap flood={flood} reports={reports} user={user}/>}
         {tab === '🌊 AI Detection' && <AICameraSystem cameras={cameras} user={user} act={act}/>}
+        {tab==='📈 Analysis'&&<AnalysisTab/>}
+        {tab==='📡 Camera Node'&&<CameraNode/>}
         {tab==='🔍 My State Cases'&&<EngineerCases reports={reports} user={user} act={act}/>}
         {tab==='🛠️ My Cases'&&<TechnicianCases reports={reports} act={act}/>}
         {tab==='🌦️ Weather Risk'&&<WeatherRisk user={user}/>}
@@ -1508,6 +1514,421 @@ function CameraCard({camera, isAdmin, act}) {
       </div>}
 
       <div style={{fontSize:10,color:'var(--gray3)',marginTop:10,textAlign:'right'}}>Last sync: {new Date(c.last_update).toLocaleTimeString()}</div>
+    </div>
+  );
+}
+
+/* ═══════════════ shared water-level detection (same logic as CameraCard) ═══════════════ */
+function detectWaterLevel(ctx, cols, rows) {
+  const data = ctx.getImageData(0, 0, cols, rows).data;
+  let best = 0;
+  for (let x = 0; x < cols; x += 5) {
+    let h = 0;
+    for (let y = rows - 1; y >= rows / 2; y--) {
+      const i = (y * cols + x) * 4;
+      const r = data[i], g = data[i + 1], b = data[i + 2];
+      const blue = b > r * 1.1 && b > g * 0.9;
+      const dark = r < 60 && g < 60 && b < 60;
+      const turbid = g > r * 0.9 && b > r * 0.9 && g + b > r * 1.8;
+      if (blue || dark || turbid) h++; else break;
+    }
+    best = Math.max(best, h);
+  }
+  return Math.min(100, Math.round((best / (rows / 2)) * 100));
+}
+
+const HUB_PREFIX = 'aireyes-';
+const MAX_LAPTOPS = 4;
+const FLOOD_THRESHOLD = 70;
+
+/* ═══════════════ ANALYSIS TAB (hub that receives up to 4 laptops) ═══════════════ */
+function AnalysisTab() {
+  const [code, setCode] = useState('');
+  const [hubStatus, setHubStatus] = useState('Starting hub…');
+  const [slots, setSlots] = useState([]); // {id,label,stream}
+  const [levels, setLevels] = useState({});
+  const slotsRef = useRef([]);
+  const peerRef = useRef(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    function start() {
+      const c = Math.random().toString(36).slice(2, 8).toUpperCase();
+      const peer = new Peer(HUB_PREFIX + c);
+      peerRef.current = peer;
+
+      peer.on('open', () => { if (!cancelled) { setCode(c); setHubStatus('Hub online — waiting for laptops'); } });
+      peer.on('error', err => {
+        if (err.type === 'unavailable-id') { peer.destroy(); start(); return; }
+        setHubStatus('Hub error: ' + err.type);
+      });
+      peer.on('call', call => {
+        if (slotsRef.current.length >= MAX_LAPTOPS) { call.close(); return; }
+        call.answer(); // receive only
+        call.on('stream', stream => {
+          if (slotsRef.current.find(s => s.id === call.peer)) return;
+          const slot = { id: call.peer, label: call.metadata?.label || 'Laptop', stream };
+          slotsRef.current = [...slotsRef.current, slot];
+          setSlots(slotsRef.current);
+        });
+        const drop = () => {
+          slotsRef.current = slotsRef.current.filter(s => s.id !== call.peer);
+          setSlots(slotsRef.current);
+          setLevels(l => { const n = { ...l }; delete n[call.peer]; return n; });
+        };
+        call.on('close', drop);
+        call.on('error', drop);
+      });
+    }
+    start();
+    return () => { cancelled = true; peerRef.current?.destroy(); };
+  }, []);
+
+  const vals = Object.values(levels);
+  const peak = vals.length ? Math.max(...vals) : 0;
+  const alerts = vals.filter(v => v > FLOOD_THRESHOLD).length;
+
+  return <>
+    <div className="panel panel-teal">
+      <h2>📈 Multi-Camera Analysis</h2>
+      <p style={{ fontSize: 13, color: 'var(--gray3)' }}>
+        On each other laptop, open <strong>📡 Camera Node</strong> and enter the hub code below. Up to {MAX_LAPTOPS} laptops can stream live video here. Analysis runs in this browser.
+      </p>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+        <div style={{ background: 'var(--navy)', color: '#fff', padding: '10px 18px', borderRadius: 10, fontFamily: 'monospace', fontSize: 26, letterSpacing: 4 }}>
+          {code || '······'}
+        </div>
+        <small style={{ color: 'var(--teal)', fontWeight: 600 }}>{hubStatus}</small>
+      </div>
+    </div>
+
+    <div className="stats">
+      <div className="stat-card"><small>📡 Connected</small><h2>{slots.length}/{MAX_LAPTOPS}</h2></div>
+      <div className="stat-card amber"><small>🌊 Highest Level</small><h2>{peak}%</h2></div>
+      <div className="stat-card red"><small>🚨 Flood Alerts</small><h2>{alerts}</h2></div>
+    </div>
+
+    <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fill,minmax(320px,1fr))', gap: 16 }}>
+      {slots.map(s => (
+        <FeedAnalyzer key={s.id} slot={s} onLevel={lv => setLevels(l => ({ ...l, [s.id]: lv }))} />
+      ))}
+      {Array.from({ length: MAX_LAPTOPS - slots.length }).map((_, i) => (
+        <div key={'e' + i} className="stat-card" style={{ textAlign: 'center', color: 'var(--gray3)', padding: 40, border: '1px dashed var(--gray2)' }}>
+          💻 Waiting for laptop {slots.length + i + 1}…
+        </div>
+      ))}
+    </div>
+  </>;
+}
+
+function FeedAnalyzer({ slot, onLevel }) {
+  const videoRef = useRef(null);
+  const canvasRef = useRef(null);
+  const [level, setLevel] = useState(0);
+  const [history, setHistory] = useState([]);
+  const [secAbove, setSecAbove] = useState(0);
+  const levelRef = useRef(0);
+
+  useEffect(() => {
+    if (videoRef.current) {
+      videoRef.current.srcObject = slot.stream;
+      videoRef.current.play().catch(() => {});
+    }
+  }, [slot.stream]);
+
+  useEffect(() => {
+    const t = setInterval(() => {
+      const v = videoRef.current, c = canvasRef.current;
+      if (!v || !c || v.readyState < 2) return;
+      const ctx = c.getContext('2d', { willReadFrequently: true });
+      ctx.drawImage(v, 0, 0, c.width, c.height);
+      const raw = detectWaterLevel(ctx, c.width, c.height);
+      levelRef.current = Math.round(levelRef.current * 0.7 + raw * 0.3);
+      const lv = levelRef.current;
+      setLevel(lv);
+      onLevel(lv);
+      setHistory(h => [...h.slice(-59), lv]);
+      if (lv > FLOOD_THRESHOLD) setSecAbove(s => s + 2);
+    }, 2000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line
+  }, []);
+
+  const flood = level > FLOOD_THRESHOLD;
+  const label = flood ? 'HIGH' : level > 30 ? 'MEDIUM' : 'LOW';
+  const avg = history.length ? Math.round(history.reduce((a, b) => a + b, 0) / history.length) : 0;
+  const peak = history.length ? Math.max(...history) : 0;
+  const pts = history.map((v, i) => `${(i / Math.max(history.length - 1, 1)) * 100},${40 - (v / 100) * 38}`).join(' ');
+
+  return (
+    <div className="stat-card" style={{ borderTopColor: flood ? '#dc2626' : '#059669' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+        <strong>💻 {slot.label}</strong>
+        <span className="badge" style={{ background: flood ? '#dc2626' : '#059669' }}>{flood ? 'FLOOD DETECTED' : 'NO FLOOD'}</span>
+      </div>
+      <div style={{ position: 'relative', background: '#000', borderRadius: 8, overflow: 'hidden', height: 170 }}>
+        <video ref={videoRef} autoPlay playsInline muted style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+        <canvas ref={canvasRef} width="80" height="60" style={{ display: 'none' }} />
+        <div style={{ position: 'absolute', top: 8, left: 8, background: flood ? 'rgba(220,38,38,.85)' : 'rgba(5,150,105,.85)', color: '#fff', fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 4 }}>
+          LIVE · {label} LEVEL
+        </div>
+      </div>
+      <div style={{ marginTop: 10 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, fontWeight: 600 }}>
+          <span>Water level</span><span style={{ color: flood ? '#dc2626' : '#059669' }}>{level}%</span>
+        </div>
+        <div style={{ height: 7, background: 'var(--gray2)', borderRadius: 4, overflow: 'hidden', marginTop: 3 }}>
+          <div style={{ width: `${level}%`, height: '100%', background: flood ? '#dc2626' : '#059669', transition: 'width .5s' }} />
+        </div>
+      </div>
+      <svg viewBox="0 0 100 40" preserveAspectRatio="none" style={{ width: '100%', height: 50, marginTop: 10, background: 'var(--gray1)', borderRadius: 6 }}>
+        <line x1="0" x2="100" y1={40 - 0.7 * 38} y2={40 - 0.7 * 38} stroke="#dc2626" strokeWidth="0.4" strokeDasharray="2 2" />
+        {history.length > 1 && <polyline points={pts} fill="none" stroke="#1B8CA8" strokeWidth="1.2" vectorEffect="non-scaling-stroke" />}
+      </svg>
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--gray3)', marginTop: 6 }}>
+        <span>Avg {avg}%</span><span>Peak {peak}%</span><span>Above 70%: {secAbove}s</span>
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════ CAMERA NODE (run on each extra laptop) ═══════════════ */
+function CameraNode() {
+  const [hub, setHub] = useState('');
+  const [label, setLabel] = useState('');
+  const [status, setStatus] = useState('');
+  const [stream, setStream] = useState(null);
+  const [connected, setConnected] = useState(false);
+  const videoRef = useRef(null);
+  const peerRef = useRef(null);
+  const streamRef = useRef(null);
+
+  useEffect(() => {
+    if (videoRef.current && stream) { videoRef.current.srcObject = stream; videoRef.current.play().catch(() => {}); }
+  }, [stream]);
+
+  function stop() {
+    peerRef.current?.destroy(); peerRef.current = null;
+    streamRef.current?.getTracks().forEach(t => t.stop()); streamRef.current = null;
+    setStream(null); setConnected(false);
+  }
+  useEffect(() => stop, []);
+
+  async function connect() {
+    if (!hub.trim()) { setStatus('Enter the hub code first.'); return; }
+    try {
+      setStatus('Opening camera…');
+      const s = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: false });
+      streamRef.current = s; setStream(s);
+      const peer = new Peer();
+      peerRef.current = peer;
+      peer.on('open', () => {
+        setStatus('Connecting to hub…');
+        const call = peer.call(HUB_PREFIX + hub.trim().toUpperCase(), s, { metadata: { label: label.trim() || 'Laptop' } });
+        call.on('close', () => { setConnected(false); setStatus('Disconnected from hub.'); });
+        setTimeout(() => setConnected(c => { if (!c) setStatus('Streaming (if the hub is full or the code is wrong, nothing will appear there).'); return true; }), 1500);
+      });
+      peer.on('error', e => setStatus(e.type === 'peer-unavailable' ? 'Hub code not found.' : 'Error: ' + e.type));
+    } catch (e) {
+      setStatus('Camera access denied or unavailable (HTTPS required).');
+    }
+  }
+
+  return (
+    <div className="panel panel-teal">
+      <h2>📡 Camera Node</h2>
+      <p style={{ fontSize: 13, color: 'var(--gray3)' }}>Use this laptop as a live camera. Enter the hub code shown on the 📈 Analysis tab of the main laptop.</p>
+      <div className="grid">
+        <input value={label} onChange={e => setLabel(e.target.value)} placeholder="Laptop name (e.g. Drain A – Block 3)" />
+        <input value={hub} onChange={e => setHub(e.target.value.toUpperCase())} placeholder="Hub code (6 characters)" maxLength={6} style={{ fontFamily: 'monospace', letterSpacing: 3 }} />
+        {!connected && !stream
+          ? <button style={{ gridColumn: '1/-1' }} onClick={connect}>Start Camera & Connect</button>
+          : <button style={{ gridColumn: '1/-1', background: 'var(--danger)' }} onClick={() => { stop(); setStatus('Stopped.'); }}>Stop Streaming</button>}
+      </div>
+      {status && <p style={{ fontSize: 13, color: 'var(--teal)', fontWeight: 600 }}>{status}</p>}
+      {stream && <video ref={videoRef} autoPlay playsInline muted style={{ width: '100%', maxWidth: 480, borderRadius: 10, background: '#000', marginTop: 10 }} />}
+    </div>
+  );
+}
+
+/* ═══════════════ IC SCANNER (OCR → fills name + IC number) ═══════════════ */
+const ADDR = /\b(JALAN|JLN|LORONG|LRG|TAMAN|KAMPUNG|KG|LOT|BLOK|PERSIARAN|KM|TINGKAT|BANDAR|PANGSAPURI|APARTMENT|NO)\b/;
+const SKIP = /(KAD|PENGENALAN|MALAYSIA|WARGANEGARA|ISLAM|LELAKI|PEREMPUAN|MYKAD|IDENTITY|CARD)/;
+
+function parseMyKad(text) {
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+
+  // --- IC number: tolerate OCR mistakes (O->0, I/l->1, S->5, B->8, Z->2) ---
+  const fixDigits = l => l.replace(/[OoQD]/g, '0').replace(/[Il|!]/g, '1').replace(/S/g, '5').replace(/B/g, '8').replace(/Z/g, '2');
+  const validDate = s => { const m = +s.slice(2, 4), d = +s.slice(4, 6); return m >= 1 && m <= 12 && d >= 1 && d <= 31; };
+  let ic = '', icIdx = -1;
+  for (let i = 0; i < lines.length && !ic; i++) {
+    const m = fixDigits(lines[i]).match(/(\d{6})\D{0,3}(\d{2})\D{0,3}(\d{4})/);
+    if (m && validDate(m[1])) { ic = m[1] + m[2] + m[3]; icIdx = i; }
+  }
+  if (!ic) { // fallback: 12 digits anywhere in the text
+    const m = fixDigits(text).replace(/[\s-]/g, '').match(/\d{12}/);
+    if (m && validDate(m[0])) ic = m[0];
+  }
+
+  // --- Name: a mostly-letters, mostly-uppercase line with 2+ words ---
+  const isNameLine = l => {
+    const up = l.toUpperCase();
+    if (SKIP.test(up) || ADDR.test(up) || /\d/.test(l)) return false;
+    const letters = l.replace(/[^A-Za-z]/g, '');
+    const nonSpace = l.replace(/\s/g, '');
+    if (letters.length < 6 || letters.length / nonSpace.length < 0.85) return false;
+    if (letters.replace(/[^A-Z]/g, '').length / letters.length < 0.8) return false; // mostly uppercase
+    return l.trim().split(/\s+/).filter(w => w.replace(/[^A-Za-z]/g, '').length >= 2).length >= 2;
+  };
+  const clean = l => l.replace(/[^A-Za-z@'/. ]/g, '').replace(/\s+/g, ' ').trim().toUpperCase();
+
+  // Only search the lines right after the IC number (name sits just under it)
+  let name = '';
+  if (icIdx >= 0) {
+    const after = lines.slice(icIdx + 1, icIdx + 6);
+    const first = after.findIndex(isNameLine);
+    if (first >= 0) {
+      name = clean(after[first]);
+      const next = after[first + 1];
+      if (next && isNameLine(next)) name += ' ' + clean(next);
+    }
+  }
+  return { ic, name };
+}
+
+function makeOcrCanvas(source, sx, sy, sw, sh, mode) {
+  const scale = Math.max(1, Math.min(3, 1800 / sw)); // upscale small images
+  const c = document.createElement('canvas');
+  c.width = Math.round(sw * scale); c.height = Math.round(sh * scale);
+  const ctx = c.getContext('2d', { willReadFrequently: true });
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(source, sx, sy, sw, sh, 0, 0, c.width, c.height);
+  const img = ctx.getImageData(0, 0, c.width, c.height);
+  const d = img.data, n = d.length / 4;
+  const gray = new Uint8ClampedArray(n);
+  const hist = new Array(256).fill(0);
+  for (let i = 0; i < n; i++) {
+    const g = Math.round(0.3 * d[i * 4] + 0.59 * d[i * 4 + 1] + 0.11 * d[i * 4 + 2]);
+    gray[i] = g; hist[g]++;
+  }
+  // contrast stretch (ignore 1% extremes)
+  let lo = 0, hi = 255, acc = 0;
+  for (let i = 0; i < 256; i++) { acc += hist[i]; if (acc > n * 0.01) { lo = i; break; } }
+  acc = 0;
+  for (let i = 255; i >= 0; i--) { acc += hist[i]; if (acc > n * 0.01) { hi = i; break; } }
+  const range = Math.max(1, hi - lo);
+  for (let i = 0; i < n; i++) gray[i] = Math.max(0, Math.min(255, ((gray[i] - lo) * 255) / range));
+  let thr = -1;
+  if (mode === 'bw') { // Otsu threshold
+    const h2 = new Array(256).fill(0);
+    for (let i = 0; i < n; i++) h2[gray[i] | 0]++;
+    let sum = 0; for (let i = 0; i < 256; i++) sum += i * h2[i];
+    let sB = 0, wB = 0, best = 0;
+    for (let i = 0; i < 256; i++) {
+      wB += h2[i]; if (!wB) continue;
+      const wF = n - wB; if (!wF) break;
+      sB += i * h2[i];
+      const mB = sB / wB, mF = (sum - sB) / wF;
+      const v = wB * wF * (mB - mF) * (mB - mF);
+      if (v > best) { best = v; thr = i; }
+    }
+  }
+  for (let i = 0; i < n; i++) {
+    const v = thr >= 0 ? (gray[i] > thr ? 255 : 0) : gray[i];
+    d[i * 4] = d[i * 4 + 1] = d[i * 4 + 2] = v; d[i * 4 + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  return c;
+}
+
+function IcScanner({ onResult }) {
+  const [open, setOpen] = useState(false);
+  const [stream, setStream] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [msg, setMsg] = useState('');
+  const [raw, setRaw] = useState('');
+  const videoRef = useRef(null);
+  const canvasRef = useRef(null);
+
+  useEffect(() => {
+    if (videoRef.current && stream) { videoRef.current.srcObject = stream; videoRef.current.play().catch(() => {}); }
+  }, [stream, open]);
+  useEffect(() => () => stream?.getTracks().forEach(t => t.stop()), [stream]);
+
+  async function openCamera() {
+    setMsg(''); setOpen(true);
+    try {
+      const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: 1920 } } });
+      setStream(s);
+    } catch { setMsg('Camera unavailable — use "Upload photo" instead.'); }
+  }
+  function closeCamera() { stream?.getTracks().forEach(t => t.stop()); setStream(null); setOpen(false); }
+
+  async function runOcr(source, w, h, fromCamera) {
+    // from the live camera, crop to the dashed guide box
+    const sx = fromCamera ? w * 0.08 : 0, sy = fromCamera ? h * 0.12 : 0;
+    const sw = fromCamera ? w * 0.84 : w, sh = fromCamera ? h * 0.76 : h;
+    const scale = Math.min(1, 1600 / sw);
+    const c = document.createElement('canvas');
+    c.width = Math.round(sw * scale); c.height = Math.round(sh * scale);
+    c.getContext('2d').drawImage(source, sx, sy, sw, sh, 0, 0, c.width, c.height);
+
+    setBusy(true); setMsg('Reading card…'); setRaw('');
+    try {
+      const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.85));
+      const f = new FormData();
+      f.append('image', blob, 'ic.jpg');
+      const res = await req('/auth/scan-ic', { method: 'POST', body: f });
+      const ic = res.ic_number || '', name = res.name || '';
+      if (!ic && !name) setMsg('Could not read the card. Try a clearer, closer photo — or type your details manually.');
+      else {
+        onResult({ ic, name });
+        setMsg(`Filled${name ? ' name' : ''}${name && ic ? ' and' : ''}${ic ? ' IC number' : ''}.${!name || !ic ? ' Please type the rest.' : ''} Check them below.`);
+      }
+    } catch (e) {
+      setMsg((e.message || 'Scan failed') + ' — please type your details manually.');
+    }
+    setBusy(false);
+  }
+
+  async function capture() {
+    const v = videoRef.current;
+    if (!v?.videoWidth) return;
+    await runOcr(v, v.videoWidth, v.videoHeight, true);
+    closeCamera();
+  }
+  async function upload(e) {
+    const f = e.target.files[0];
+    if (!f) return;
+    const bmp = await createImageBitmap(f);
+    await runOcr(bmp, bmp.width, bmp.height, false);
+    e.target.value = '';
+  }
+
+  return (
+    <div style={{ background: '#f0f6f9', border: '1px dashed var(--teal)', borderRadius: 10, padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <strong style={{ fontSize: 13, color: 'var(--navy)' }}>🪪 Scan MyKad to auto-fill</strong>
+      <small style={{ color: 'var(--gray3)' }}>Photo is read on your device and is not uploaded.</small>
+      {open && (
+        <div style={{ position: 'relative' }}>
+          <video ref={videoRef} autoPlay playsInline muted style={{ width: '100%', borderRadius: 8, background: '#000' }} />
+          <div style={{ position: 'absolute', inset: '12% 8%', border: '2px dashed rgba(255,255,255,.8)', borderRadius: 8, pointerEvents: 'none' }} />
+        </div>
+      )}
+      <canvas ref={canvasRef} style={{ display: 'none' }} />
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        {!open && <button type="button" onClick={openCamera} disabled={busy} style={{ fontSize: 13 }}>📷 Take Photo</button>}
+        {open && <button type="button" onClick={capture} disabled={busy || !stream} style={{ fontSize: 13, background: 'var(--ok)' }}>📸 Capture & Read</button>}
+        {open && <button type="button" onClick={closeCamera} style={{ fontSize: 13, background: 'var(--gray3)' }}>Cancel</button>}
+        <label style={{ fontSize: 13, background: 'var(--navy)', color: '#fff', padding: '8px 14px', borderRadius: 8, cursor: 'pointer' }}>
+          🖼️ Upload Photo<input type="file" accept="image/*" capture="environment" onChange={upload} style={{ display: 'none' }} />
+        </label>
+      </div>
+      {busy && <small style={{ color: 'var(--teal)', fontWeight: 600 }}>Reading…</small>}
+      {msg && !busy && <small style={{ color: 'var(--navy)' }}>{msg}</small>}
+      {raw && !busy && <details><summary style={{ fontSize: 11, cursor: 'pointer' }}>What the scanner read</summary><pre style={{ fontSize: 11, whiteSpace: 'pre-wrap', margin: 0 }}>{raw}</pre></details>}
     </div>
   );
 }
