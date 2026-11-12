@@ -1,13 +1,13 @@
 from pathlib import Path
 from uuid import uuid4
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import math
 import httpx
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
-from sqlalchemy import select
+from sqlalchemy import select, func
 from .config import settings
 from .db import Base, engine, get_db, SessionLocal
 from .models import User, Report, Asset, WorkOrder, Threshold, Comment, AICamera
@@ -23,7 +23,6 @@ Base.metadata.create_all(bind=engine)
 Path(settings.upload_dir).mkdir(parents=True, exist_ok=True)
 app=FastAPI(title="Air-Eyes API", version="1.0")
 app.include_router(scan_ic_router, prefix="/api")
-from fastapi.middleware.cors import CORSMiddleware
 
 app.add_middleware(
     CORSMiddleware,
@@ -63,13 +62,13 @@ def seed():
             db.add(User(name="System Admin",email="admin@example.com",password_hash=hash_pw("Admin123!"),role="admin"))
         for k,v in {"blockage_confidence":.6,"high_flood_risk":.7}.items():
             if not db.scalar(select(Threshold).where(Threshold.key==k)): db.add(Threshold(key=k,value=v))
-        
+
         # Seed AI Cameras
         if not db.scalar(select(AICamera)):
             db.add(AICamera(name="Smart Drain Camera A - KLCC", location="KLCC, Kuala Lumpur", latitude=3.1579, longitude=101.7123, status="green"))
             db.add(AICamera(name="Smart Drain Camera B - Pavilion", location="Pavilion, Kuala Lumpur", latitude=3.1488, longitude=101.7137, status="red"))
             db.add(AICamera(name="Smart Drain Camera C - Masjid Jamek", location="Masjid Jamek, Kuala Lumpur", latitude=3.1492, longitude=101.6961, status="green"))
-        
+
         db.commit()
     finally: db.close()
 seed()
@@ -101,7 +100,7 @@ async def register(name: str=Form(...), email: str=Form(...), password: str=Form
     ic = _validate_ic(ic_number)
     if not ic: raise HTTPException(422,"IC number is required for registration")
     if db.scalar(select(User).where(User.ic_number==ic)): raise HTTPException(409,"IC number already registered")
-    
+
     lat, lon = None, None
     if role == "technician" and department_office:
         coords = await _geocode_internal(department_office)
@@ -114,12 +113,12 @@ async def register(name: str=Form(...), email: str=Form(...), password: str=Form
 
 @app.post("/api/auth/login")
 def login(email: str=Form(...), password: str=Form(...), db: Session=Depends(get_db)):
-    u=db.scalar(select(User).where(User.email==email))
+    u=db.scalar(select(User).where(func.lower(User.email)==email.strip().lower()))
     if not u or not u.active or not check_pw(password,u.password_hash): raise HTTPException(401,"Incorrect login")
-    return {"access_token":token_for(u.id),"token_type":"bearer","user":{"id":u.id,"name":u.name,"email":u.email,"role":u.role,"state":u.state or "","iem_number":u.iem_number or "","ic_number":u.ic_number or "","department_office":u.department_office or ""}}
+    return {"access_token":token_for(u.id),"token_type":"bearer","user":user_json(u)}
 
 @app.get("/api/auth/me")
-def me(u: User=Depends(current_user)): return {"id":u.id,"name":u.name,"email":u.email,"role":u.role,"state":u.state or "","iem_number":u.iem_number or "","ic_number":u.ic_number or "","department_office":u.department_office or ""}
+def me(u: User=Depends(current_user)): return user_json(u)
 
 @app.post("/api/reports")
 async def create_report(description: str=Form(""), latitude: float=Form(...), longitude: float=Form(...), photo: UploadFile|None=File(None), db: Session=Depends(get_db), u: User=Depends(require_permissions(Permission.CREATE_REPORT))):
@@ -136,8 +135,35 @@ async def create_report(description: str=Form(""), latitude: float=Form(...), lo
     r=Report(citizen_id=u.id,description=description,latitude=latitude,longitude=longitude,photo_path=path,ai_label=label,ai_confidence=conf,flood_risk=risk,priority=priority(conf,risk),state=detected_state)
     db.add(r);db.commit();db.refresh(r);return report_json(r)
 
+# ── Citizen reward points ──
+REWARD_VERIFIED=10   # engineer verifies the report is a real issue
+REWARD_RESOLVED=20   # fix confirmed and report closed
+POINTS_PER_LEVEL=100
+
+def _add_points(user:User, pts:int):
+    user.points=(user.points or 0)+pts
+    user.level=1+user.points//POINTS_PER_LEVEL
+
+def reward_citizen(db:Session, r:Report, stage:str):
+    """Award the reporting citizen once per stage ('verified' or 'resolved')."""
+    citizen=db.get(User,r.citizen_id)
+    if not citizen or citizen.role!="citizen": return
+    if stage=="verified" and not r.reward_verified_given:
+        _add_points(citizen,REWARD_VERIFIED); r.reward_verified_given=True
+    elif stage=="resolved" and not r.reward_resolved_given:
+        # A report closed without passing through verification still earns both stages
+        if not r.reward_verified_given:
+            _add_points(citizen,REWARD_VERIFIED); r.reward_verified_given=True
+        _add_points(citizen,REWARD_RESOLVED); r.reward_resolved_given=True
+        citizen.total_reports_resolved=(citizen.total_reports_resolved or 0)+1
+
+def user_json(u:User):
+    return {"id":u.id,"name":u.name,"email":u.email,"role":u.role,"state":u.state or "","iem_number":u.iem_number or "","ic_number":u.ic_number or "","department_office":u.department_office or "",
+            "points":u.points or 0,"level":u.level or 1,"total_reports_resolved":u.total_reports_resolved or 0}
+
 def report_json(r):
     return {
+        "reward_points":(REWARD_VERIFIED if r.reward_verified_given else 0)+(REWARD_RESOLVED if r.reward_resolved_given else 0),
         "id":r.id,"citizen_id":r.citizen_id,"description":r.description,
         "latitude":r.latitude,"longitude":r.longitude,"photo_path":r.photo_path,
         "status":r.status,"ai_label":r.override_label or r.ai_label,
@@ -168,7 +194,11 @@ def review(rid:int, ai_label:str|None=None, maintenance_priority:int|None=None, 
         r.priority=maintenance_priority
     if status is not None:
         if status not in {"submitted","reviewed","in_progress","engineer_approved","pending_closure","resolved","rejected"}: raise HTTPException(422,"Invalid status")
+        if r.status=="pending_closure" and status=="engineer_approved":
+            r.sent_back_count=(r.sent_back_count or 0)+1
         r.status=status
+        if status=="engineer_approved": reward_citizen(db,r,"verified")
+        elif status=="resolved": reward_citizen(db,r,"resolved")
     if flood_risk is not None:
         if not 0<=flood_risk<=1: raise HTTPException(422,"Flood risk must be between 0 and 1")
         r.flood_risk=flood_risk
@@ -187,6 +217,7 @@ def approve_risk(rid:int, flood_risk:float|None=None, db:Session=Depends(get_db)
     r.risk_approved=True
     r.assigned_engineer_id=u.id
     r.status="engineer_approved"
+    reward_citizen(db,r,"verified")
     db.commit();return report_json(r)
 
 @app.patch("/api/reports/{rid}/technician-submit")
@@ -203,6 +234,8 @@ async def technician_submit(rid:int, comment:str=Form(""), file:UploadFile|None=
         name=uuid4().hex+ext; Path(settings.upload_dir,name).write_bytes(raw); r.fix_photo_path="/uploads/"+name
     if not r.fix_photo_path: raise HTTPException(422,"A fix photo is required")
     r.technician_comment=comment
+    r.technician_id=u.id
+    r.submitted_at=datetime.now(timezone.utc)
     r.status="pending_closure"
     db.commit();return report_json(r)
 
@@ -215,7 +248,37 @@ def approve_closure(rid:int, db:Session=Depends(get_db), u:User=Depends(require_
     if u.role=="engineer" and u.state and r.state and r.state!=u.state:
         raise HTTPException(403,"This report belongs to a different state")
     r.status="resolved"; r.proof_approved=True
+    r.resolved_at=datetime.now(timezone.utc)
+    tech=db.get(User,r.technician_id) if r.technician_id else None
+    if tech and tech.role=="technician":
+        tech.total_reports_resolved=(tech.total_reports_resolved or 0)+1
+        tech.points=(tech.points or 0)+10+(5 if not r.sent_back_count else 0)  # +5 first-time-right bonus
+        tech.level=1+tech.points//100
+    reward_citizen(db,r,"resolved")
     db.commit();return report_json(r)
+
+@app.get("/api/leaderboard/technicians")
+def technician_leaderboard(period:str="month", state:str|None=None, db:Session=Depends(get_db), u:User=Depends(current_user)):
+    if u.role not in {"technician","engineer","admin"}: raise HTTPException(403,"Not allowed")
+    q=select(Report).where(Report.status=="resolved", Report.technician_id.is_not(None))
+    if period=="week": q=q.where(Report.resolved_at>=datetime.now(timezone.utc)-timedelta(days=7))
+    elif period=="month": q=q.where(Report.resolved_at>=datetime.now(timezone.utc)-timedelta(days=30))
+    if u.role=="engineer" and u.state: state=u.state   # engineers see their own state
+    if state: q=q.where(Report.state==state)
+    stats={}
+    for r in db.scalars(q).all():
+        s=stats.setdefault(r.technician_id,{"fixes":0,"send_backs":0,"first_time":0})
+        s["fixes"]+=1; s["send_backs"]+=r.sent_back_count or 0
+        if not r.sent_back_count: s["first_time"]+=1
+    out=[]
+    for tid,s in stats.items():
+        t=db.get(User,tid)
+        if not t or t.role!="technician": continue
+        out.append({"id":t.id,"name":t.name,"avatar_style":t.avatar_style,"level":t.level,"points":t.points,
+                    "fixes":s["fixes"],"send_backs":s["send_backs"],
+                    "first_time_rate":round(100*s["first_time"]/s["fixes"])})
+    out.sort(key=lambda x:(-x["fixes"],-x["first_time_rate"],x["name"]))
+    return out
 
 @app.get("/api/map/flood")
 def flood_map(db:Session=Depends(get_db),u:User=Depends(require_permissions(Permission.READ_FLOOD_MAP))):
@@ -243,7 +306,7 @@ def drainage_map(db:Session=Depends(get_db),u:User=Depends(require_permissions(P
 
 @app.get("/api/admin/users")
 def users(db:Session=Depends(get_db),u:User=Depends(require_permissions(Permission.READ_USER))):
-    return [{"id":x.id,"name":x.name,"email":x.email,"role":x.role,"active":x.active,"state":x.state or "","iem_number":x.iem_number or "","ic_number":x.ic_number or "","department_office":x.department_office or "","last_location_update":x.last_location_update.isoformat() if x.last_location_update else None} for x in db.scalars(select(User)).all()]
+    return [{"id":x.id,"name":x.name,"email":x.email,"role":x.role,"active":x.active,"state":x.state or "","iem_number":x.iem_number or "","ic_number":x.ic_number or "","department_office":x.department_office or "","points":x.points or 0,"level":x.level or 1,"last_location_update":x.last_location_update.isoformat() if x.last_location_update else None} for x in db.scalars(select(User)).all()]
 
 @app.post("/api/admin/users")
 def add_user(name:str, email:str, password:str, role:str, state:str="", iem_number:str="", ic_number:str="", department_office:str="", db:Session=Depends(get_db), u:User=Depends(require_permissions(Permission.CREATE_USER))):
@@ -322,18 +385,18 @@ async def get_radar_imagery(latitude: float, longitude: float, resolution: str =
     """Get radar and satellite imagery for a location using AccuWeather."""
     if not settings.accuweather_api_key:
         raise HTTPException(501, "AccuWeather API key not configured")
-    
+
     client = await get_accuweather_client()
     location_key = await client.get_location_key(latitude, longitude)
-    
+
     if not location_key:
         raise HTTPException(404, "Could not find location for given coordinates")
-    
+
     imagery = await client.get_radar_imagery(location_key, resolution)
-    
+
     if not imagery:
         raise HTTPException(502, "Failed to fetch radar imagery from AccuWeather")
-    
+
     return imagery
 
 @app.get("/api/radar/tile")
@@ -341,16 +404,16 @@ async def get_radar_tile(zoom: int, x: int, y: int, timestamp: str | None = None
     """Get radar tile URL for map overlay using AccuWeather."""
     if not settings.accuweather_api_key:
         raise HTTPException(501, "AccuWeather API key not configured")
-    
+
     if not (0 <= zoom <= 18):
         raise HTTPException(422, "Zoom level must be between 0 and 18")
-    
+
     client = await get_accuweather_client()
     tile_url = await client.get_radar_tiles(zoom, x, y, timestamp)
-    
+
     if not tile_url:
         raise HTTPException(502, "Failed to fetch radar tile from AccuWeather")
-    
+
     return {"tile_url": tile_url, "zoom": zoom, "x": x, "y": y}
 
 @app.get("/api/radar/products")
@@ -358,10 +421,10 @@ async def get_radar_products(locations: bool = False, u: User=Depends(require_pe
     """List available radar products from AccuWeather."""
     if not settings.accuweather_api_key:
         raise HTTPException(501, "AccuWeather API key not configured")
-    
+
     client = await get_accuweather_client()
     products = await client.get_radar_products(locations=locations)
-    
+
     return {"products": products}
 
 @app.get("/api/weather/metmalaysia/forecast")
@@ -369,10 +432,10 @@ async def get_metmalaysia_forecast(location_filter: str = None, limit: int = 100
     """Get weather forecast from MET Malaysia Open Data API (no auth required)."""
     client = await get_metmalaysia_client()
     forecast = await client.get_open_data_forecast(location_filter=location_filter, limit=limit)
-    
+
     if not forecast:
         raise HTTPException(502, "Failed to fetch MET Malaysia forecast")
-    
+
     return forecast
 
 @app.get("/api/weather/metmalaysia/warnings")
@@ -380,10 +443,10 @@ async def get_metmalaysia_warnings(u: User=Depends(require_permissions(Permissio
     """Get weather warnings from MET Malaysia Open Data API (no auth required)."""
     client = await get_metmalaysia_client()
     warnings = await client.get_open_data_warnings()
-    
+
     if not warnings:
         raise HTTPException(502, "Failed to fetch MET Malaysia warnings")
-    
+
     return warnings
 
 @app.get("/api/weather/weatherapi/current")
@@ -391,13 +454,13 @@ async def get_weatherapi_current(location: str, aqi: bool = False, u: User=Depen
     """Get current weather from WeatherAPI.com."""
     if not settings.weatherapi_key:
         raise HTTPException(501, "WeatherAPI.com key not configured")
-    
+
     client = await get_weatherapi_client()
     weather = await client.get_current_weather(location, aqi=aqi)
-    
+
     if not weather:
         raise HTTPException(502, "Failed to fetch WeatherAPI.com current weather")
-    
+
     return weather
 
 @app.get("/api/weather/weatherapi/forecast")
@@ -405,16 +468,16 @@ async def get_weatherapi_forecast(location: str, days: int = 7, hourly: bool = F
     """Get weather forecast from WeatherAPI.com."""
     if not settings.weatherapi_key:
         raise HTTPException(501, "WeatherAPI.com key not configured")
-    
+
     if not 1 <= days <= 14:
         raise HTTPException(422, "Days must be between 1 and 14")
-    
+
     client = await get_weatherapi_client()
     forecast = await client.get_forecast(location, days=days, hourly=hourly)
-    
+
     if not forecast:
         raise HTTPException(502, "Failed to fetch WeatherAPI.com forecast")
-    
+
     return forecast
 
 @app.get("/api/weather/weatherapi/radar")
@@ -422,13 +485,13 @@ async def get_weatherapi_radar(location: str, u: User=Depends(require_permission
     """Get radar imagery data from WeatherAPI.com (Pro+ plan required)."""
     if not settings.weatherapi_key:
         raise HTTPException(501, "WeatherAPI.com key not configured")
-    
+
     client = await get_weatherapi_client()
     radar = await client.get_radar(location)
-    
+
     if not radar:
         raise HTTPException(502, "Failed to fetch WeatherAPI.com radar")
-    
+
     return radar
 
 @app.get("/api/route/flood-safe")
@@ -448,35 +511,35 @@ async def get_flood_safe_route(
         raise HTTPException(422, "Invalid origin coordinates")
     if not (-90 <= dest_lat <= 90 and -180 <= dest_lon <= 180):
         raise HTTPException(422, "Invalid destination coordinates")
-    
+
     # Fetch route from OSRM
     osrm_url = f"{settings.osrm_api_url}/route/v1/driving/{origin_lon},{origin_lat};{dest_lon},{dest_lat}"
     params = {
         "overview": "full",
         "geometries": "geojson"
     }
-    
+
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(osrm_url, params=params)
             if response.status_code != 200:
                 raise HTTPException(502, f"OSRM routing failed: {response.status_code}")
-            
+
             route_data = response.json()
-            
+
             if route_data.get("code") != "Ok":
                 raise HTTPException(502, f"OSRM error: {route_data.get('message', 'Unknown error')}")
-            
+
             if not route_data.get("routes"):
                 raise HTTPException(404, "No route found between these locations")
-            
+
             route = route_data["routes"][0]
             geometry = route.get("geometry", {})
             coordinates = geometry.get("coordinates", [])  # OSRM returns [lon, lat]
-            
+
             # Convert to [lat, lon] format for our analysis
             route_coordinates = [[coord[1], coord[0]] for coord in coordinates]
-            
+
             # Get flood reports for risk analysis
             flood_reports = [
                 {
@@ -487,10 +550,10 @@ async def get_flood_safe_route(
                 }
                 for r in db.scalars(select(Report)).all()
             ]
-            
+
             # Analyze flood risk along the route
             risk_analysis = analyze_route_flood_risk(route_coordinates, flood_reports)
-            
+
             return {
                 "route": {
                     "distance": route.get("distance", 0),  # meters
@@ -500,7 +563,7 @@ async def get_flood_safe_route(
                 },
                 "flood_risk_analysis": risk_analysis
             }
-            
+
     except httpx.TimeoutException:
         raise HTTPException(504, "Routing service timeout")
     except Exception as e:
@@ -517,7 +580,7 @@ async def geocode_location(
     """
     if not location or len(location.strip()) < 2:
         raise HTTPException(422, "Location name is required")
-    
+
     # Use Nominatim API (free, no API key required)
     nominatim_url = "https://nominatim.openstreetmap.org/search"
     params = {
@@ -526,30 +589,30 @@ async def geocode_location(
         "limit": 1,
         "countrycodes": "MY"  # Restrict to Malaysia
     }
-    
+
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(nominatim_url, params=params, headers={"User-Agent": "DrainWatch-Flood-Routing"})
             if response.status_code != 200:
                 raise HTTPException(502, f"Geocoding service failed: {response.status_code}")
-            
+
             results = response.json()
-            
+
             if not results or len(results) == 0:
                 raise HTTPException(404, f"Location '{location}' not found in Malaysia")
-            
+
             result = results[0]
             lat = float(result.get("lat"))
             lon = float(result.get("lon"))
             display_name = result.get("display_name", location)
-            
+
             return {
                 "location": location,
                 "display_name": display_name,
                 "latitude": lat,
                 "longitude": lon
             }
-            
+
     except httpx.TimeoutException:
         raise HTTPException(504, "Geocoding service timeout")
     except Exception as e:
@@ -571,23 +634,23 @@ async def get_nearest_technicians(
     """
     if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
         raise HTTPException(422, "Invalid coordinates")
-    
+
     # Get all active technicians
     technicians = db.scalars(
         select(User).where(User.role == "technician").where(User.active == True)
     ).all()
-    
+
     nearby_technicians = []
-    
+
     for tech in technicians:
         if tech.current_latitude is None or tech.current_longitude is None:
             continue
-        
+
         # Calculate distance using Haversine formula (simplified)
         lat_diff = tech.current_latitude - latitude
         lon_diff = tech.current_longitude - longitude
         distance_km = math.sqrt(lat_diff**2 + lon_diff**2) * 111  # Approximate km
-        
+
         if distance_km <= radius_km:
             nearby_technicians.append({
                 "id": tech.id,
@@ -602,10 +665,10 @@ async def get_nearest_technicians(
                 "department_office": tech.department_office or "",
                 "last_location_update": tech.last_location_update.isoformat() if tech.last_location_update else None
             })
-    
+
     # Sort by distance
     nearby_technicians.sort(key=lambda x: x["distance_km"])
-    
+
     return {
         "location": {"latitude": latitude, "longitude": longitude},
         "radius_km": radius_km,
@@ -627,15 +690,15 @@ def update_technician_location(
     """
     if u.role != "technician":
         raise HTTPException(403, "Only technicians can update their location")
-    
+
     if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
         raise HTTPException(422, "Invalid coordinates")
-    
+
     u.current_latitude = latitude
     u.current_longitude = longitude
     u.last_location_update = datetime.now(timezone.utc)
     db.commit()
-    
+
     return {
         "message": "Location updated",
         "latitude": latitude,
@@ -660,7 +723,7 @@ async def get_turn_by_turn_directions(
         raise HTTPException(422, "Invalid origin coordinates")
     if not (-90 <= dest_lat <= 90 and -180 <= dest_lon <= 180):
         raise HTTPException(422, "Invalid destination coordinates")
-    
+
     # Fetch route with steps from OSRM
     osrm_url = f"{settings.osrm_api_url}/route/v1/driving/{origin_lon},{origin_lat};{dest_lon},{dest_lat}"
     params = {
@@ -668,29 +731,29 @@ async def get_turn_by_turn_directions(
         "geometries": "geojson",
         "steps": "true"
     }
-    
+
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(osrm_url, params=params)
             if response.status_code != 200:
                 raise HTTPException(502, f"OSRM routing failed: {response.status_code}")
-            
+
             route_data = response.json()
-            
+
             if route_data.get("code") != "Ok":
                 raise HTTPException(502, f"OSRM error: {route_data.get('message', 'Unknown error')}")
-            
+
             if not route_data.get("routes"):
                 raise HTTPException(404, "No route found between these locations")
-            
+
             route = route_data["routes"][0]
             legs = route.get("legs", [])
-            
+
             # Extract turn-by-turn instructions
             instructions = []
             total_distance = 0
             total_duration = 0
-            
+
             for leg in legs:
                 for step in leg.get("steps", []):
                     # OSRM coordinates are [lon, lat], but Leaflet expects [lat, lon]
@@ -707,7 +770,7 @@ async def get_turn_by_turn_directions(
                     instructions.append(instruction)
                     total_distance += step.get("distance", 0)
                     total_duration += step.get("duration", 0)
-            
+
             # Convert to human-readable instructions
             readable_instructions = []
             for i, step in enumerate(instructions):
@@ -724,7 +787,7 @@ async def get_turn_by_turn_directions(
                     "location": step["location"],
                     "maneuver": step["maneuver"]
                 })
-            
+
             return {
                 "route": {
                     "distance": total_distance,
@@ -736,7 +799,7 @@ async def get_turn_by_turn_directions(
                 },
                 "steps": readable_instructions # renamed from instructions to match frontend
             }
-            
+
     except httpx.TimeoutException:
         raise HTTPException(504, "Routing service timeout")
     except Exception as e:
@@ -789,23 +852,23 @@ async def analyze_camera_sam2(cid: int, image: UploadFile = File(...), db: Sessi
     It takes a camera frame and returns high-precision segmentation metrics.
     """
     from .ai import segment_water_sam2
-    
+
     c = db.get(AICamera, cid)
     if not c: raise HTTPException(404, "Camera not found")
-    
+
     contents = await image.read()
     result = segment_water_sam2(contents)
-    
+
     # Update camera status based on high-precision SAM 2 results
     # If SAM 2 detects > 70% water area, consider it a flood
     if result["water_area_ratio"] > 0.70:
         c.status = "red"
     else:
         c.status = "green"
-    
+
     c.last_update = datetime.now(timezone.utc)
     db.commit()
-    
+
     return {
         "camera_id": cid,
         "camera_name": c.name,
@@ -819,10 +882,10 @@ def _format_instruction(step):
     instruction_type = maneuver.get("type", "continue")
     modifier = maneuver.get("modifier", "")
     street = step.get("name", "the road")
-    
+
     if not street:
         street = "the road"
-    
+
     instructions = {
         "turn": f"Turn {modifier} onto {street}",
         "new name": f"Continue on {street}",
@@ -838,13 +901,13 @@ def _format_instruction(step):
         "continue": f"Continue on {street}",
         "notification": f"Continue"
     }
-    
+
     base = instructions.get(instruction_type, f"Continue on {street}")
-    
+
     if modifier and instruction_type not in ["new name", "arrive", "continue"]:
         if instruction_type == "turn":
             base = f"Turn {modifier} onto {street}"
         elif instruction_type == "depart":
             base = f"Head {modifier} on {street}"
-    
+
     return base
