@@ -67,16 +67,50 @@ function App(){
   let[tab,T]=useState('📊 Overview'),[reports,R]=useState([]),[flood,F]=useState([]),[users,U]=useState([]);
   let[error,X]=useState(''),[msg,M]=useState('');
 
+  let[reward,setReward]=useState(null);
+
+  // Compare each report's reward_points against what this citizen has already seen;
+  // anything new triggers the reward pop-up.
+  function checkRewards(me,reps){
+    if(me.role!=='citizen')return;
+    let key=`seenRewards_${me.id}`, raw=localStorage.getItem(key);
+    let now={};reps.forEach(r=>{if(r.reward_points>0)now[r.id]=r.reward_points});
+    localStorage.setItem(key,JSON.stringify(now));
+    if(raw===null)return; // first visit: set baseline, no pop-up for old rewards
+    let seen=JSON.parse(raw);
+    let items=reps.filter(r=>(now[r.id]||0)>(seen[r.id]||0))
+      .map(r=>({id:r.id,pts:now[r.id]-(seen[r.id]||0),status:r.status}));
+    if(!items.length)return;
+    let gained=items.reduce((s,i)=>s+i.pts,0);
+    let prevLevel=1+Math.floor(((me.points||0)-gained)/100);
+    setReward({items,gained,total:me.points||0,level:me.level||1,levelUp:(me.level||1)>prevLevel});
+  }
+
   async function refresh(){
     try{
-      R(await req('/reports'));
+      let reps=await req('/reports');R(reps);
       F(await req('/map/flood'));
       setCameras(await req('/ai-cameras'));
       if(user.role==='admin')U(await req('/admin/users'));
+      // Pull latest points/level so rewards show up without re-login
+      let me=await req('/auth/me');localStorage.setItem('user',JSON.stringify(me));setUser(me);
+      checkRewards(me,reps);
       X('');
     }catch(e){X(e.message)}
   }
   useEffect(()=>{if(user)refresh()},[user?.id]);
+
+  // Citizens: poll quietly so the reward pop-up appears soon after an engineer approves
+  useEffect(()=>{
+    if(user?.role!=='citizen')return;
+    let t=setInterval(async()=>{
+      try{
+        let reps=await req('/reports'),me=await req('/auth/me');
+        R(reps);localStorage.setItem('user',JSON.stringify(me));setUser(me);checkRewards(me,reps);
+      }catch{}
+    },30000);
+    return()=>clearInterval(t);
+  },[user?.id,user?.role]);
   async function act(fn,ok='Updated'){try{await fn();M(ok);await refresh()}catch(e){X(e.message)}}
 
   /* ── Login / Register ── */
@@ -140,7 +174,7 @@ function App(){
             <p style={{color:'var(--gray3)',fontSize:14,margin:0}}>Sign in to your account</p>
             <input value={email} onChange={e=>E(e.target.value)} placeholder="Email"/>
             <input type="password" value={password} onChange={e=>P(e.target.value)} placeholder="Password"/>
-            <button onClick={async()=>{try{let f=new FormData();f.append('email',email);f.append('password',password);let d=await req('/auth/login',{method:'POST',body:f});localStorage.setItem('token',d.access_token);localStorage.setItem('user',JSON.stringify(d.user));setUser(d.user)}catch(e){X(e.message)}}}>Sign in</button>
+            <button onClick={async()=>{try{let f=new FormData();f.append('email',email.trim());f.append('password',password);let d=await req('/auth/login',{method:'POST',body:f});localStorage.setItem('token',d.access_token);localStorage.setItem('user',JSON.stringify(d.user));setUser(d.user)}catch(e){X(e.message)}}}>Sign in</button>
             {error&&<p className="error">{error}</p>}
             {msg&&<p className="success">{msg}</p>}
             <button className="link" onClick={()=>{SR(true);X('');M('')}}>No account? Register</button>
@@ -159,6 +193,7 @@ function App(){
   if(user.role==='technician')nav.push('🛠️ My Cases');
   nav.push('🌦️ Weather Risk');
   if(user.role==='admin')nav.push('👥 Users');
+  if(['admin','engineer','technician'].includes(user.role))nav.push('🏆 Leaderboard');
 
   return(
     <div className="layout">
@@ -175,6 +210,7 @@ function App(){
           <small>{user.role}{user.state?` · ${user.state}`:''}</small>
           {user.iem_number&&<small style={{color:'var(--amber)',fontSize:11,marginTop:2}}>IEM: {user.iem_number}</small>}
           {user.ic_number&&<small style={{color:'var(--gray3)',fontSize:11,marginTop:2,fontFamily:'monospace'}}>{user.ic_number.replace(/(\d{6})(\d{2})(\d{4})/,'$1-$2-$3')}</small>}
+          {user.role==='citizen'&&<small style={{color:'var(--amber)',fontSize:12,marginTop:4,fontWeight:700}} aria-label={`${user.points||0} reward points, level ${user.level||1}`}>⭐ {user.points||0} pts · Lv {user.level||1}</small>}
         </div>
         <nav>{nav.map(n=><button key={n} className={tab===n?'active':''} onClick={()=>T(n)}>{n}</button>)}</nav>
         <button className="signout" onClick={()=>{localStorage.clear();setUser(null)}}>Sign out</button>
@@ -186,6 +222,7 @@ function App(){
         </header>
         {error&&<p className="error">{error}</p>}
         {msg&&<p className="success">{msg}</p>}
+        {reward&&<RewardPopup reward={reward} onClose={()=>setReward(null)}/>}
         {tab==='📊 Overview'&&<Overview reports={reports} flood={flood} user={user}/>}
         {tab==='📋 Reports'&&<ReportsTab user={user} reports={reports} act={act}/>}
         {tab==='🗺️ Flood Map'&&<FloodMap flood={flood} reports={reports} user={user}/>}
@@ -193,9 +230,10 @@ function App(){
         {tab==='📈 Analysis'&&<AnalysisTab/>}
         {tab==='📡 Camera Node'&&<CameraNode/>}
         {tab==='🔍 My State Cases'&&<EngineerCases reports={reports} user={user} act={act}/>}
-        {tab==='🛠️ My Cases'&&<TechnicianCases reports={reports} act={act}/>}
+        {tab==='🛠️ My Cases'&&<TechnicianCases reports={reports} act={act} user={user}/>}
         {tab==='🌦️ Weather Risk'&&<WeatherRisk user={user}/>}
         {tab==='👥 Users'&&<Users users={users} act={act} user={user} reports={reports}/>}
+        {tab==='🏆 Leaderboard'&&<TechLeaderboard user={user}/>}
       </main>
     </div>
   );
@@ -212,8 +250,59 @@ function Overview({reports,flood,user}){
       <div className="stat-card purple"><small>⏳ Pending Closure</small><h2>{reports.filter(r=>r.status==='pending_closure').length}</h2></div>
       <div className="stat-card green"><small>✅ Resolved</small><h2>{reports.filter(r=>r.status==='resolved').length}</h2></div>
     </div>
+    {user.role==='citizen'&&<RewardsCard user={user} reports={reports}/>}
     <ReportTable reports={reports}/>
   </>
+}
+
+/* ── Reward pop-up (accessible modal) ── */
+function RewardPopup({reward,onClose}){
+  let btn=useRef(null);
+  useEffect(()=>{
+    btn.current?.focus();
+    let k=e=>{if(e.key==='Escape')onClose()};
+    window.addEventListener('keydown',k);return()=>window.removeEventListener('keydown',k);
+  },[]);
+  return<div onClick={onClose} style={{position:'fixed',inset:0,background:'rgba(15,34,48,.55)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:2000,padding:16}}>
+    <div role="dialog" aria-modal="true" aria-labelledby="reward-title" onClick={e=>e.stopPropagation()}
+      style={{background:'var(--white)',borderRadius:16,padding:'28px 28px 22px',maxWidth:380,width:'100%',textAlign:'center',boxShadow:'0 20px 50px rgba(0,0,0,.25)'}}>
+      <div aria-hidden="true" style={{fontSize:52,lineHeight:1}}>{reward.levelUp?'🏅':'⭐'}</div>
+      <h2 id="reward-title" style={{margin:'10px 0 4px',color:'var(--navy)'}}>+{reward.gained} points!</h2>
+      {reward.levelUp&&<p style={{margin:'0 0 6px',fontWeight:700,color:'var(--amber)'}}>Level up! You're now Level {reward.level}</p>}
+      <p style={{margin:'0 0 12px',color:'var(--gray3)',fontSize:14}}>Thanks for keeping the drains clear.</p>
+      <ul style={{listStyle:'none',padding:0,margin:'0 0 14px',fontSize:14,textAlign:'left'}}>
+        {reward.items.map(i=><li key={i.id} style={{padding:'6px 0',borderBottom:'1px solid var(--gray2)'}}>
+          DR-{i.id}: <strong>+{i.pts}</strong> {i.status==='resolved'?'— fix confirmed':'— report verified'}
+        </li>)}
+      </ul>
+      <p style={{margin:'0 0 16px',fontSize:13}}>Total: <strong>{reward.total} pts</strong> · Level {reward.level}</p>
+      <button ref={btn} onClick={onClose} style={{width:'100%'}}>Awesome</button>
+    </div>
+  </div>
+}
+
+/* ── Citizen reward points ── */
+function RewardsCard({user,reports}){
+  let pts=user.points||0, lvl=user.level||1, into=pts%100;
+  let earned=reports.filter(r=>r.reward_points>0);
+  return<div className="panel">
+    <h2>⭐ My Rewards</h2>
+    <p style={{margin:'4px 0 10px'}}>Earn <strong>+10 pts</strong> when an engineer verifies your report and <strong>+20 pts</strong> when the fix is confirmed. Every 100 pts is a new level.</p>
+    <div style={{display:'flex',gap:24,alignItems:'center',flexWrap:'wrap'}}>
+      <div><small>Total points</small><h2 style={{margin:0}}>{pts}</h2></div>
+      <div><small>Level</small><h2 style={{margin:0}}>{lvl}</h2></div>
+      <div style={{flex:1,minWidth:180}}>
+        <small>{into}/100 to Level {lvl+1}</small>
+        <div role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={into} aria-label="Progress to next level"
+          style={{height:10,background:'var(--gray2)',borderRadius:6,overflow:'hidden',marginTop:4}}>
+          <div style={{width:`${into}%`,height:'100%',background:'var(--amber)'}}/>
+        </div>
+      </div>
+    </div>
+    {earned.length>0&&<ul style={{margin:'12px 0 0',paddingLeft:18,fontSize:13}}>
+      {earned.map(r=><li key={r.id}>DR-{r.id}: +{r.reward_points} pts {r.status==='resolved'?'(verified + fixed)':'(verified)'}</li>)}
+    </ul>}
+  </div>
 }
 
 /* ═══════════════════════════════════════ REPORTS TAB ═══════════════════════════════════════ */
@@ -360,12 +449,29 @@ function EngineerCases({reports,user,act}){
 }
 
 /* ═══════════════════════════════════════ TECHNICIAN CASES ═══════════════════════════════════════ */
-function TechnicianCases({reports,act}){
+/* ── "You're #N this month" strip shown at top of My Cases ── */
+function MyRankStrip({user}){
+  let[rows,setRows]=useState(null);
+  useEffect(()=>{req('/leaderboard/technicians?period=month').then(setRows).catch(()=>setRows([]))},[]);
+  if(!rows)return null;
+  let i=rows.findIndex(t=>t.id===user.id);
+  if(i<0)return<div className="panel" style={{padding:'10px 16px',fontSize:13,color:'var(--gray3)'}}>🏆 Get your first fix approved this month to join the leaderboard.</div>;
+  let need=i>0?rows[i-1].fixes-rows[i].fixes+1:0;
+  return<div className="panel" style={{padding:'10px 16px',display:'flex',gap:12,alignItems:'center',flexWrap:'wrap',borderLeft:'4px solid var(--amber)'}}>
+    <strong>🏆 You're #{i+1} this month</strong>
+    <span style={{fontSize:13,color:'var(--gray3)',flex:1}}>
+      {rows[i].fixes} fixes · Lv {rows[i].level}{i>0?` · ${need} more to reach #${i}`:' · Top spot, keep it up!'}
+    </span>
+  </div>
+}
+
+function TechnicianCases({reports,act,user}){
   let assigned=reports.filter(r=>r.status==='engineer_approved');
   let submitted=reports.filter(r=>r.status==='pending_closure');
   let done=reports.filter(r=>r.status==='resolved'&&r.proof_approved);
 
   return<>
+    <MyRankStrip user={user}/>
     <div className="panel panel-teal">
       <h2><span className="step-tag">Step 2</span>Cases Assigned to You</h2>
       <p>These cases have been approved by the engineer. Carry out the repair, upload a photo, add a comment, then submit for engineer approval.</p>
@@ -432,6 +538,42 @@ function TechnicianFixForm({r,act}){
       </div>
       <button type="submit" style={{background:'var(--teal)',alignSelf:'flex-start',fontSize:13}}>📤 Submit Fix for Engineer Approval</button>
     </form>
+  </div>
+}
+
+/* ═══════════════════════════════════════ TECHNICIAN LEADERBOARD ═══════════════════════════════════════ */
+function TechLeaderboard({user}){
+  let[rows,setRows]=useState([]),[period,setPeriod]=useState('month'),[loading,setLoading]=useState(true),[err,setErr]=useState('');
+  useEffect(()=>{
+    setLoading(true);setErr('');
+    req(`/leaderboard/technicians?period=${period}`).then(setRows).catch(e=>setErr(e.message)).finally(()=>setLoading(false));
+  },[period]);
+  let me=rows.findIndex(t=>t.id===user.id);
+  return<div className="panel panel-teal">
+    <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap',marginBottom:6}}>
+      <h2 style={{margin:0,flex:1}}>🏆 Technician Leaderboard</h2>
+      <select value={period} onChange={e=>setPeriod(e.target.value)} style={{width:'auto'}}>
+        <option value="week">This week</option><option value="month">This month</option><option value="all">All time</option>
+      </select>
+    </div>
+    <p style={{fontSize:13,color:'var(--gray3)'}}>
+      Ranked by fixes approved by an engineer. Ties are broken by first-time-right rate.
+      {user.role==='engineer'&&user.state&&<> Showing cases in <strong>{user.state}</strong>.</>}
+    </p>
+    {user.role==='technician'&&me>=0&&<div style={{background:'#fff7e6',border:'1px solid var(--amber)',borderRadius:8,padding:'8px 12px',marginBottom:10,fontSize:13,fontWeight:600}}>
+      You are #{me+1} · {rows[me].fixes} fixes · Lv {rows[me].level}
+    </div>}
+    {loading&&<p style={{textAlign:'center',color:'var(--gray3)',padding:20}}>Loading…</p>}
+    {err&&<p className="error">{err}</p>}
+    {!loading&&!err&&rows.length===0&&<p style={{textAlign:'center',color:'var(--gray3)',padding:20}}>No approved fixes in this period yet.</p>}
+    {rows.map((t,i)=><div key={t.id} style={{display:'flex',gap:10,alignItems:'center',padding:'10px 8px',borderBottom:'1px solid var(--gray2)',flexWrap:'wrap',
+        background:t.id===user.id?'#fff7e6':'transparent',borderRadius:6}}>
+      <strong style={{minWidth:34,fontSize:16}}>{['🥇','🥈','🥉'][i]||`#${i+1}`}</strong>
+      <span style={{flex:1,minWidth:120}}>{t.name}{t.id===user.id&&<small style={{color:'var(--amber)',fontWeight:700}}> (you)</small>}</span>
+      <Badge label={`Lv ${t.level}`} color="var(--amber)"/>
+      <Badge label={`${t.fixes} fixes`} color="var(--teal)"/>
+      <small style={{color:'var(--gray3)'}}>{t.first_time_rate}% first-time</small>
+    </div>)}
   </div>
 }
 

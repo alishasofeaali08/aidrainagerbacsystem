@@ -47,6 +47,13 @@ class Report(Base):
     technician_comment: Mapped[str] = mapped_column(Text, default="")
     state: Mapped[str] = mapped_column(String(80), default="")
     assigned_engineer_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    technician_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    sent_back_count: Mapped[int] = mapped_column(Integer, default=0)
+    # Citizen reward tracking (prevents awarding the same stage twice)
+    reward_verified_given: Mapped[bool] = mapped_column(Boolean, default=False)
+    reward_resolved_given: Mapped[bool] = mapped_column(Boolean, default=False)
 
 class Asset(Base):
     __tablename__ = "assets"
