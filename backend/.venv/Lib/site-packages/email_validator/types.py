@@ -1,5 +1,5 @@
 import warnings
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Optional
 
 
 class ValidatedEmail:
@@ -41,7 +41,7 @@ class ValidatedEmail:
 
     """If a deliverability check is performed and if it succeeds, a list of (priority, domain)
     tuples of MX records specified in the DNS for the domain."""
-    mx: List[Tuple[int, str]]
+    mx: list[tuple[int, str]]
 
     """If no MX records are actually specified in DNS and instead are inferred, through an obsolete
     mechanism, from A or AAAA records, the value is the type of DNS record used instead (`A` or `AAAA`)."""
@@ -68,7 +68,7 @@ class ValidatedEmail:
 
     """For backwards compatibility, some fields are also exposed through a dict-like interface. Note
     that some of the names changed when they became attributes."""
-    def __getitem__(self, key: str) -> Union[Optional[str], bool, List[Tuple[int, str]]]:
+    def __getitem__(self, key: str) -> Optional[str] | bool | list[tuple[int, str]]:
         warnings.warn("dict-like access to the return value of validate_email is deprecated and may not be supported in the future.", DeprecationWarning, stacklevel=2)
         if key == "email":
             return self.normalized
@@ -93,7 +93,8 @@ class ValidatedEmail:
         if not isinstance(other, ValidatedEmail):
             return False
         return (
-            self.normalized == other.normalized
+            getattr(self, 'original', None) == getattr(other, 'original', None)
+            and self.normalized == other.normalized
             and self.local_part == other.local_part
             and self.domain == other.domain
             and getattr(self, 'ascii_email', None) == getattr(other, 'ascii_email', None)
@@ -110,7 +111,7 @@ class ValidatedEmail:
     def as_constructor(self) -> str:
         return "ValidatedEmail(" \
             + ",".join(f"\n  {key}={repr(getattr(self, key))}"
-                       for key in ('normalized', 'local_part', 'domain',
+                       for key in ('original', 'normalized', 'local_part', 'domain',
                                    'ascii_email', 'ascii_local_part', 'ascii_domain',
                                    'smtputf8', 'mx', 'mx_fallback_type',
                                    'display_name')
@@ -119,8 +120,8 @@ class ValidatedEmail:
             + ")"
 
     """Convenience method for accessing ValidatedEmail as a dict"""
-    def as_dict(self) -> Dict[str, Any]:
-        d = self.__dict__
+    def as_dict(self) -> dict[str, Any]:
+        d = dict(self.__dict__)
         if d.get('domain_address'):
             d['domain_address'] = repr(d['domain_address'])
         return d

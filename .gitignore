@@ -1,1 +1,25 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+
+# Node / Vite
+node_modules/
+dist/
+.vite/
+
+# Local databases and uploads
+*.db
+*.sqlite
+*.sqlite3
+backend/uploads/
+
+# OS / IDE
+.DS_Store
 .idea/
+.vscode/
