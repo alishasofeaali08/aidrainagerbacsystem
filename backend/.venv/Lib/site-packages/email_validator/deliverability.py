@@ -1,4 +1,4 @@
-from typing import Any, List, Optional, Tuple, TypedDict
+from typing import Any, Optional, TypedDict
 
 import ipaddress
 
@@ -19,7 +19,7 @@ def caching_resolver(*, timeout: Optional[int] = None, cache: Any = None, dns_re
 
 
 DeliverabilityInfo = TypedDict("DeliverabilityInfo", {
-    "mx": List[Tuple[int, str]],
+    "mx": list[tuple[int, str]],
     "mx_fallback_type": Optional[str],
     "unknown-deliverability": str,
 }, total=False)
@@ -66,7 +66,7 @@ def validate_email_deliverability(domain: str, domain_i18n: str, timeout: Option
             deliverability_info["mx_fallback_type"] = None
 
         except dns.resolver.NoAnswer:
-            # If there was no MX record, fall back to an A or AAA record
+            # If there was no MX record, fall back to an A or AAAA record
             # (RFC 5321 Section 5). Check A first since it's more common.
 
             # If the A/AAAA response has no Globally Reachable IP address,

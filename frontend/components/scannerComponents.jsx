@@ -182,5 +182,3 @@ export function IcScanner({ onResult }) {
     </div>
   );
 }
-
-export default App;

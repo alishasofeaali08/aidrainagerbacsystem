@@ -8,12 +8,12 @@ import re
 import unicodedata
 import idna  # implements IDNA 2008; Python's codec is only IDNA 2003
 import ipaddress
-from typing import Optional, Tuple, TypedDict, Union
+from typing import Optional, TypedDict
 
 
-def split_email(email: str) -> Tuple[Optional[str], str, str, bool]:
-    # Return the display name, unescaped local part, and domain part
-    # of the address, and whether the local part was quoted. If no
+def split_email(email: str) -> tuple[Optional[str], str, str, bool, str]:
+    # Return the display name, the original local part, the unescaped
+    # local part, and the domain part of the address. If no
     # display name was present and angle brackets do not surround
     # the address, display name will be None; otherwise, it will be
     # set to the display name or the empty string if there were
@@ -36,7 +36,7 @@ def split_email(email: str) -> Tuple[Optional[str], str, str, bool]:
     #
     # Display names are either basic characters (the same basic characters
     # permitted in email addresses, but periods are not allowed and spaces
-    # are allowed; see RFC 5322 Appendix A.1.2), or or a quoted string with
+    # are allowed; see RFC 5322 Appendix A.1.2), or a quoted string with
     # the same rules as a quoted local part. (Multiple quoted strings might
     # be allowed? Unclear.) Optional space (RFC 5322 3.4 CFWS) and then the
     # email address follows in angle brackets.
@@ -47,7 +47,7 @@ def split_email(email: str) -> Tuple[Optional[str], str, str, bool]:
     # We assume the input string is already stripped of leading and
     # trailing CFWS.
 
-    def split_string_at_unquoted_special(text: str, specials: Tuple[str, ...]) -> Tuple[str, str]:
+    def split_string_at_unquoted_special(text: str, specials: tuple[str, ...]) -> tuple[str, str]:
         # Split the string at the first character in specials (an @-sign
         # or left angle bracket) that does not occur within quotes and
         # is not followed by a Unicode combining character.
@@ -61,7 +61,14 @@ def split_email(email: str) -> Tuple[Optional[str], str, str, bool]:
             # the < as the start of "<email>" syntax in that case. Likewise,
             # if anything combines with an @ or ", we should probably not
             # treat it as a special character.
-            if unicodedata.normalize("NFC", text[i:])[0] != c:
+            #
+            # Only the characters right after c can combine with it, so
+            # look at a short window rather than normalizing the rest of
+            # the string at every position, which is quadratic in the
+            # length of the input. The window is c, the 30 combining
+            # characters in a row allowed by the Unicode Stream-Safe Text
+            # Format (UAX #15), and one more character.
+            if unicodedata.normalize("NFC", text[i:i + 32])[0] != c:
                 left_part += c
 
             elif inside_quote:
@@ -112,7 +119,7 @@ def split_email(email: str) -> Tuple[Optional[str], str, str, bool]:
 
         return left_part, right_part
 
-    def unquote_quoted_string(text: str) -> Tuple[str, bool]:
+    def unquote_quoted_string(text: str) -> tuple[str, bool]:
         # Remove surrounding quotes and unescape escaped backslashes
         # and quotes. Escapes are parsed liberally. I think only
         # backslashes and quotes can be escaped but we'll allow anything
@@ -178,7 +185,7 @@ def split_email(email: str) -> Tuple[Optional[str], str, str, bool]:
             raise EmailSyntaxError("There can't be anything after the email address.")
 
         # Remove the initial and trailing angle brackets.
-        addr_spec = right_part[1:].rstrip(">")
+        addr_spec = right_part[1:-1]
 
         # Split the email address at the first unquoted @-sign.
         local_part, domain_part = split_string_at_unquoted_special(addr_spec, ("@",))
@@ -193,9 +200,9 @@ def split_email(email: str) -> Tuple[Optional[str], str, str, bool]:
         domain_part = domain_part[1:]
 
     # Unquote the local part if it is quoted.
-    local_part, is_quoted_local_part = unquote_quoted_string(local_part)
+    local_part_unquoted, is_quoted_local_part = unquote_quoted_string(local_part)
 
-    return display_name, local_part, domain_part, is_quoted_local_part
+    return display_name, local_part, local_part_unquoted, is_quoted_local_part, domain_part
 
 
 def get_length_reason(addr: str, limit: int) -> str:
@@ -498,6 +505,14 @@ class DomainNameValidationResult(TypedDict):
 def validate_email_domain_name(domain: str, test_environment: bool = False, globally_deliverable: bool = True) -> DomainNameValidationResult:
     """Validates the syntax of the domain part of an email address."""
 
+    # A domain can get shorter through normalization (either from IDNA decoding or Unicode normalization),
+    # but the caller may use the original input, so the length check can apply up front. We also get a
+    # less helpful error via idna.uts46_remap and would rather do it ourselves. And it's important to
+    # prevent a DOS attack via idna: See below.
+    if len(domain) > DOMAIN_MAX_LENGTH:
+        reason = get_length_reason(domain, limit=DOMAIN_MAX_LENGTH)
+        raise EmailSyntaxError(f"The email address is too long after the @-sign {reason}.")
+
     # Check for invalid characters.
     # (RFC 952 plus RFC 6531 section 3.3 for internationalized addresses)
     bad_chars = {
@@ -579,6 +594,14 @@ def validate_email_domain_name(domain: str, test_environment: bool = False, glob
         # doesn't give a nice error, so we call the underlying idna.alabel method
         # directly. idna.alabel checks label length and doesn't give great messages,
         # but we can't easily go to lower level methods.
+        #
+        # idna.encode also rejects a domain that is too long before it looks
+        # at any label, because checking or decoding a long label can take time
+        # quadratic in its length (a long Punycode "xn--" label, or, before idna
+        # 3.15, a long run of Arabic-Indic digits). Since we call idna.alabel
+        # directly, check the length first above. A label never gets shorter
+        # when it is converted to IDNA ASCII, so a domain this long would fail
+        # the length check below anyway.
         try:
             ascii_domain = ".".join(
                 idna.alabel(label).decode("ascii")
@@ -644,6 +667,13 @@ def validate_email_domain_name(domain: str, test_environment: bool = False, glob
         if ascii_domain == d or ascii_domain.endswith("." + d):
             raise EmailSyntaxError("The part after the @-sign is a special-use or reserved name that cannot be used with email.")
 
+    # Domains without Punycode labels come back unchanged from the IDNA round trip below.
+    if "xn--" not in ascii_domain:
+        return {
+            "ascii_domain": ascii_domain,
+            "domain": ascii_domain,
+        }
+
     # We may have been given an IDNA ASCII domain to begin with. Check
     # that the domain actually conforms to IDNA. It could look like IDNA
     # but not be actual IDNA. For ASCII-only domains, the conversion out
@@ -674,6 +704,20 @@ def validate_email_domain_name(domain: str, test_environment: bool = False, glob
     if bad_chars:
         raise EmailSyntaxError("The part after the @-sign contains invalid characters: " + ", ".join(sorted(bad_chars)) + ".")
     check_unsafe_chars(domain_i18n)
+
+    # If any label has right-to-left characters, the Bidi Rule applies to
+    # every label in the domain, including left-to-right ones (RFC 5893
+    # Section 1.4 and 2, UTS #46 CheckBidi). The idna package only checks
+    # each label on its own, so a label like "1" next to a right-to-left
+    # label was accepted, and such domains can be displayed identically to
+    # a different domain (e.g. 1.xn--4dbc.com and xn--4dbc.1.com, which
+    # are 1.אב.com and אב.1.com in Unicode, with Hebrew alef bet).
+    if any(unicodedata.bidirectional(c) in ("R", "AL", "AN") for c in domain_i18n):
+        for label in domain_i18n.split("."):
+            try:
+                idna.check_bidi(label, check_ltr=True)
+            except idna.IDNAError as e:
+                raise EmailSyntaxError(f"The part after the @-sign is not valid IDNA ({e}).") from e
 
     # Check that it can be encoded back to IDNA ASCII. We have no test
     # case for this.
@@ -758,7 +802,7 @@ def validate_email_length(addrinfo: ValidatedEmail) -> None:
 
 
 class DomainLiteralValidationResult(TypedDict):
-    domain_address: Union[ipaddress.IPv4Address, ipaddress.IPv6Address]
+    domain_address: ipaddress.IPv4Address | ipaddress.IPv6Address
     domain: str
 
 
@@ -767,7 +811,7 @@ def validate_email_domain_literal(domain_literal: str) -> DomainLiteralValidatio
     # a compressed/normalized address.
     # RFC 5321 4.1.3 and RFC 5322 3.4.1.
 
-    addr: Union[ipaddress.IPv4Address, ipaddress.IPv6Address]
+    addr: ipaddress.IPv4Address | ipaddress.IPv6Address
 
     # Try to parse the domain literal as an IPv4 address.
     # There is no tag for IPv4 addresses, so we can never
@@ -784,12 +828,17 @@ def validate_email_domain_literal(domain_literal: str) -> DomainLiteralValidatio
             "domain": f"[{addr}]",
         }
 
-    # If it begins with "IPv6:" it's an IPv6 address.
-    if domain_literal.startswith("IPv6:"):
+    # If it begins with "IPv6:" it's an IPv6 address. The tag is case-insensitive
+    # like all ABNF literal strings (RFC 5234 2.3), so "ipv6:" is accepted too.
+    if domain_literal[:5].lower() == "ipv6:":
         try:
             addr = ipaddress.IPv6Address(domain_literal[5:])
         except ValueError as e:
             raise EmailSyntaxError(f"The IPv6 address in brackets after the @-sign is not valid ({e}).") from e
+
+        # Python accepts a zone index ("%eth0") but RFC 5321 4.1.3 does not.
+        if addr.scope_id is not None:
+            raise EmailSyntaxError("The IPv6 address in brackets after the @-sign is not valid (It has a zone index).")
 
         # Return the IPv6Address object and construct a normalized
         # domain literal.

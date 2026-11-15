@@ -106,7 +106,7 @@ export function ReportStateRow({r,act}){
 }
 
 /* ═══════════════════════════════════════ WEATHER RISK TAB ═══════════════════════════════════════ */
-function WeatherRisk({user,flood=[]}){
+export function WeatherRisk({user,flood=[]}){
   let[data,setData]=useState(null),[loading,setLoading]=useState(false),[error,setError]=useState('');
   let[selected,setSel]=useState(null);
 

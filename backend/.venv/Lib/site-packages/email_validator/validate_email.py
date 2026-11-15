@@ -1,4 +1,4 @@
-from typing import Optional, Union, TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING
 import unicodedata
 
 from .exceptions import EmailSyntaxError
@@ -14,7 +14,7 @@ else:
 
 
 def validate_email(
-    email: Union[str, bytes],
+    email: str | bytes,
     /,  # prior arguments are positional-only
     *,  # subsequent arguments are keyword-only
     allow_smtputf8: Optional[bool] = None,
@@ -77,7 +77,7 @@ def validate_email(
     # Normally, there is only one @-sign. But the awkward "quoted string"
     # local part form (RFC 5321 4.1.2) allows @-signs in the local
     # part if the local part is quoted.
-    display_name, local_part, domain_part, is_quoted_local_part \
+    display_name, original_local_part, unescaped_local_part, is_quoted_local_part, domain_part \
         = split_email(email)
 
     if display_name:
@@ -90,22 +90,21 @@ def validate_email(
 
     # Collect return values in this instance.
     ret = ValidatedEmail()
-    ret.original = ((local_part if not is_quoted_local_part
-                    else ('"' + local_part + '"'))
-                    + "@" + domain_part)  # drop the display name, if any, for email length tests at the end
+    ret.original = original_local_part + "@" + domain_part  # drop the display name, if any, for email length tests at the end
     ret.display_name = display_name
 
     # Validate the email address's local part syntax and get a normalized form.
     # If the original address was quoted and the decoded local part is a valid
     # unquoted local part, then we'll get back a normalized (unescaped) local
     # part.
-    local_part_info = validate_email_local_part(local_part,
+    local_part_info = validate_email_local_part(unescaped_local_part,
                                                 allow_smtputf8=allow_smtputf8,
                                                 allow_empty_local=allow_empty_local,
                                                 quoted_local_part=is_quoted_local_part,
                                                 strict=strict)
-    ret.local_part = local_part_info["local_part"]
-    ret.ascii_local_part = local_part_info["ascii_local_part"]
+
+    # Report whether SMTPUTF8 is required for the address as given, prior to
+    # Unicode normalization next.
     ret.smtputf8 = local_part_info["smtputf8"]
 
     # RFC 6532 section 3.1 says that Unicode NFC normalization should be applied,
@@ -120,17 +119,24 @@ def validate_email(
     # this library. (UTS #39 seems to require that the *input* be NKFC normalized
     # and has other requirements that are hard to check without additional Unicode
     # data, and I don't know whether the rules really apply in the wild.)
-    normalized_local_part = unicodedata.normalize("NFC", ret.local_part)
-    if normalized_local_part != ret.local_part:
+    #
+    # Normalize the unquoted and unescaped local part, not ret.local_part, and
+    # take the quoting from the second validation. ret.local_part has already
+    # had unnecessary quotes removed, so normalizing it would turn e.g.
+    # "a\u037eb" (quoted, with a Greek question mark) into a;b without quotes.
+    normalized_local_part = unicodedata.normalize("NFC", unescaped_local_part)
+    if normalized_local_part != unescaped_local_part:
         try:
-            validate_email_local_part(normalized_local_part,
-                                      allow_smtputf8=allow_smtputf8,
-                                      allow_empty_local=allow_empty_local,
-                                      quoted_local_part=is_quoted_local_part,
-                                      strict=strict)
+            local_part_info = validate_email_local_part(normalized_local_part,
+                                                        allow_smtputf8=allow_smtputf8,
+                                                        allow_empty_local=allow_empty_local,
+                                                        quoted_local_part=is_quoted_local_part,
+                                                        strict=strict)
         except EmailSyntaxError as e:
             raise EmailSyntaxError("After Unicode normalization: " + str(e)) from e
-        ret.local_part = normalized_local_part
+
+    ret.local_part = local_part_info["local_part"]
+    ret.ascii_local_part = local_part_info["ascii_local_part"]
 
     # If a quoted local part isn't allowed but is present, now raise an exception.
     # This is done after any exceptions raised by validate_email_local_part so
@@ -173,9 +179,7 @@ def validate_email(
     ret.normalized = ret.local_part + "@" + ret.domain
 
     # If the email address has an ASCII form, add it.
-    if not ret.smtputf8:
-        if not ret.ascii_domain:
-            raise Exception("Missing ASCII domain.")
+    if ret.ascii_local_part and ret.ascii_domain:
         ret.ascii_email = (ret.ascii_local_part or "") + "@" + ret.ascii_domain
     else:
         ret.ascii_email = None
