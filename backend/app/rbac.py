@@ -39,6 +39,7 @@ class Permission(Enum):
     UPDATE_THRESHOLD = "update_threshold"
     
     # AI Camera permissions
+    READ_AI_CAMERAS = "read_ai_cameras"
     MANAGE_AI_CAMERAS = "manage_ai_cameras"
     
     # Full control
@@ -64,6 +65,7 @@ ROLE_PERMISSIONS: dict[str, Set[Permission]] = {
         Permission.OVERRIDE_AI_LABEL,
         Permission.ASSIGN_WORK_ORDER,
         Permission.CLOSE_WORK_ORDER,
+        Permission.READ_AI_CAMERAS,
         Permission.READ_DRAINAGE_MAP,
         Permission.READ_FLOOD_MAP,
     },
@@ -74,11 +76,13 @@ ROLE_PERMISSIONS: dict[str, Set[Permission]] = {
         Permission.READ_FLOOD_MAP,
         Permission.READ_DRAINAGE_MAP,
         Permission.READ_THRESHOLD,
+        Permission.READ_AI_CAMERAS,
     },
     "admin": {
         # All permissions
         Permission.FULL_CONTROL,
         Permission.MANAGE_AI_CAMERAS,
+        Permission.READ_AI_CAMERAS,
     }
 }
 

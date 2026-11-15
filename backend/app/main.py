@@ -180,13 +180,15 @@ def reports(db: Session=Depends(get_db), u: User=Depends(require_permissions(Per
     # Engineer only sees reports for their assigned state
     if u.role=="engineer" and u.state: q=q.where(Report.state==u.state)
     elif u.role=="engineer": q=q.where(Report.id==-1)  # no state assigned → see nothing
+    if u.role=="technician":
+        q=q.where((Report.status=="engineer_approved") | ((Report.status=="pending_closure") & (Report.technician_id==u.id)))
     return [report_json(r) for r in db.scalars(q).all()]
 
 @app.patch("/api/reports/{rid}/review")
 def review(rid:int, ai_label:str|None=None, maintenance_priority:int|None=None, status:str|None=None, flood_risk:float|None=None, db:Session=Depends(get_db), u:User=Depends(require_any_permission(Permission.REVIEW_REPORT, Permission.FULL_CONTROL))):
     r=db.get(Report,rid)
     if not r: raise HTTPException(404,"Report not found")
-    if u.role=="engineer" and u.state and r.state and r.state!=u.state:
+    if u.role=="engineer" and (not u.state or r.state!=u.state):
         raise HTTPException(403,"This report belongs to a different state")
     if ai_label is not None: r.override_label=ai_label
     if maintenance_priority is not None:
@@ -209,7 +211,7 @@ def approve_risk(rid:int, flood_risk:float|None=None, db:Session=Depends(get_db)
     if u.role not in {"engineer","admin"}: raise HTTPException(403,"Only engineers or admins can approve risk")
     r=db.get(Report,rid)
     if not r: raise HTTPException(404,"Report not found")
-    if u.role=="engineer" and u.state and r.state and r.state!=u.state:
+    if u.role=="engineer" and (not u.state or r.state!=u.state):
         raise HTTPException(403,"This report belongs to a different state")
     if flood_risk is not None:
         if not 0<=flood_risk<=1: raise HTTPException(422,"Flood risk must be between 0 and 1")
@@ -245,7 +247,7 @@ def approve_closure(rid:int, db:Session=Depends(get_db), u:User=Depends(require_
     r=db.get(Report,rid)
     if not r: raise HTTPException(404,"Report not found")
     if r.status!="pending_closure": raise HTTPException(422,"Report must be pending closure before it can be closed")
-    if u.role=="engineer" and u.state and r.state and r.state!=u.state:
+    if u.role=="engineer" and (not u.state or r.state!=u.state):
         raise HTTPException(403,"This report belongs to a different state")
     r.status="resolved"; r.proof_approved=True
     r.resolved_at=datetime.now(timezone.utc)
@@ -282,19 +284,36 @@ def technician_leaderboard(period:str="month", state:str|None=None, db:Session=D
 
 @app.get("/api/map/flood")
 def flood_map(db:Session=Depends(get_db),u:User=Depends(require_permissions(Permission.READ_FLOOD_MAP))):
-    return [{"id":r.id,"latitude":r.latitude,"longitude":r.longitude,"risk_score":r.flood_risk,"status":r.status,"priority":r.priority,"description":r.description,"photo_path":r.photo_path,"state":r.state or "","ai_label":r.override_label or r.ai_label} for r in db.scalars(select(Report)).all()]
+    q=select(Report)
+    if u.role=="citizen": q=q.where(Report.citizen_id==u.id)
+    elif u.role=="engineer": q=q.where(Report.state==u.state) if u.state else q.where(Report.id==-1)
+    return [{"id":r.id,"latitude":r.latitude,"longitude":r.longitude,"risk_score":r.flood_risk,"status":r.status,"priority":r.priority,"description":r.description,"photo_path":r.photo_path,"state":r.state or "","ai_label":r.override_label or r.ai_label} for r in db.scalars(q).all()]
+
+def _assert_report_scope(report: Report, user: User):
+    """Enforce the same report visibility boundary for detail sub-resources."""
+    if user.role == "citizen" and report.citizen_id != user.id:
+        raise HTTPException(403, "You can only access your own reports")
+    if user.role == "engineer" and (not user.state or report.state != user.state):
+        raise HTTPException(403, "This report is outside your assigned state")
+    if user.role == "technician" and not (
+        report.status == "engineer_approved" or
+        (report.status == "pending_closure" and report.technician_id == user.id)
+    ):
+        raise HTTPException(403, "This report is not available to your role")
 
 @app.get("/api/reports/{rid}/comments")
-def get_comments(rid:int, db:Session=Depends(get_db), u:User=Depends(current_user)):
+def get_comments(rid:int, db:Session=Depends(get_db), u:User=Depends(require_permissions(Permission.READ_REPORT))):
     r=db.get(Report,rid)
     if not r: raise HTTPException(404,"Report not found")
+    _assert_report_scope(r, u)
     comments=db.scalars(select(Comment).where(Comment.report_id==rid).order_by(Comment.created_at)).all()
     return [{"id":c.id,"user_name":c.user_name,"user_role":c.user_role,"text":c.text,"created_at":c.created_at.isoformat()} for c in comments]
 
 @app.post("/api/reports/{rid}/comments")
-def post_comment(rid:int, text:str=Form(...), db:Session=Depends(get_db), u:User=Depends(current_user)):
+def post_comment(rid:int, text:str=Form(...), db:Session=Depends(get_db), u:User=Depends(require_permissions(Permission.READ_REPORT))):
     r=db.get(Report,rid)
     if not r: raise HTTPException(404,"Report not found")
+    _assert_report_scope(r, u)
     if not text.strip(): raise HTTPException(422,"Comment cannot be empty")
     c=Comment(report_id=rid,user_id=u.id,user_name=u.name,user_role=u.role,text=text.strip())
     db.add(c);db.commit();db.refresh(c)
@@ -359,6 +378,8 @@ def weather_risk(provider: str = None, db:Session=Depends(get_db), u:User=Depend
          key=lambda x: x.get("combined_risk") or 0,
          reverse=True
           )
+    if u.role=="engineer":
+        results=[item for item in results if item.get("state")==u.state] if u.state else []
     return results
 
 @app.delete("/api/admin/users/{uid}")
@@ -806,7 +827,7 @@ async def get_turn_by_turn_directions(
         raise HTTPException(500, f"Route calculation error: {str(e)}")
 
 @app.get("/api/ai-cameras")
-def get_ai_cameras(db: Session = Depends(get_db)):
+def get_ai_cameras(db: Session = Depends(get_db), u: User = Depends(require_permissions(Permission.READ_AI_CAMERAS))):
     cameras = db.scalars(select(AICamera)).all()
     return [{
         "id": c.id,
